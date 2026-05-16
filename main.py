@@ -113,4 +113,7 @@ plotter = RealTimePlotAPI(
     line_width=2,
     y_range=[0, 6.3]
 )
-
+
+th = threading.Thread(target=main, args=(plotter,), daemon=True)
+th.start()
+plotter.start()
