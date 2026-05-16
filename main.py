@@ -58,12 +58,12 @@ class Reaction:
     def balance(self, pendulum): # Actual stabilisation code goes here, can call on the ai class 
 
         corrected_theta = pendulum.theta % (2*np.pi)
-        # if corrected_theta > np.pi or corrected_theta > -np.pi and corrected_theta < 0:
-        #     return 10 * self.I 
+        if corrected_theta > np.pi or corrected_theta > -np.pi and corrected_theta < 0:
+            return 10 * self.I 
 
-        # else:
-        #     return -10 * self.I             
-        return 0
+        else:
+            return -10 * self.I             
+        
 
 
 
@@ -98,7 +98,7 @@ def main(plotter: RealTimePlotAPI):
 
         pend.apply_forces(temp_t, wheel)
         pend.draw()
-        plotter.push('s', count, pend.theta)
+        plotter.push('s', count, pend.theta % (2*np.pi))
         plotter.push('v', count, pend.dtheta)
         plotter.push('a', count, pend.ddtheta)
 
