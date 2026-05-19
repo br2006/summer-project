@@ -6,7 +6,7 @@ from gpt import RealTimePlotAPI
 import threading
 
 WIDTH, HEIGHT = 800, 600
-TPF, FPS = 1, 120 # Ticks per frame, frames per second
+TPF, FPS = 5, 60 # Ticks per frame, frames per second
 temp_t = time.time()
 
 pygame.init()
@@ -14,9 +14,12 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
 
 
+def is_positive(n: int):
+    return 1 if n >=0 else -1
+
 
 class Pendulum:
-    
+   
     def __init__(self, height, I, theta_0, v):
         self.l = height
         self.I = I
@@ -35,7 +38,7 @@ class Pendulum:
         self.theta += self.dtheta * (1/(TPF*FPS))
         # print(self.theta, self.dtheta)
         return time.time()
-    
+   
     def draw(self):
         screen.fill((255,255,255))
         pygame.draw.circle(screen, (0,0,0), (400 + 150*np.sin(self.theta), 300 - 150*np.cos(self.theta)), 10)
@@ -50,20 +53,29 @@ class Reaction:
         self.r = r
         self.I = self.m * self.r**2
 
+        self.kp, self.ki, self.kd = 0.3, 0, 0
+        self.dt = 1/(TPF*FPS)
+
         self.phi = 0
         self.dphi = 0
         self.ddphi = 0
 
+        self.integral = 0
+        self.torque = 0
 
-    def balance(self, pendulum): # Actual stabilisation code goes here, can call on the ai class 
+        self.maxtorque = 15*self.I
 
-        corrected_theta = pendulum.theta % (2*np.pi)
-        if corrected_theta > np.pi or corrected_theta > -np.pi and corrected_theta < 0:
-            return 10 * self.I 
 
-        else:
-            return -10 * self.I             
-        
+    def balance(self, pendulum): # Actual stabilisation code goes here, can call on the ai class
+
+        # corrected_theta = pendulum.theta % (2*np.pi) * is_positive(pendulum.theta)
+        corrected_theta = pendulum.theta
+        self.integral += self.dt * corrected_theta
+        self.ddphi = - (corrected_theta * self.kp + pendulum.dtheta*self.kd + self.integral*self.ki)
+        print((self.ddphi + pendulum.ddtheta) * self.I )
+        return (self.ddphi + pendulum.ddtheta) * self.I
+               
+       
 
 
 
@@ -74,8 +86,8 @@ class Reaction:
 
 
 def main(plotter: RealTimePlotAPI):
-    
-    pend = Pendulum(1, 1, 0.3, 0)
+   
+    pend = Pendulum(1, 1, 0.1, 0)
     wheel = Reaction(1, 1)
     count = 0
 
@@ -87,7 +99,7 @@ def main(plotter: RealTimePlotAPI):
             if event.type == pygame.QUIT:
                 exit()
 
-            
+           
             keys = pygame.key.get_pressed()
             if event.type == pygame.KEYDOWN:
                 if keys[pygame.K_RIGHT]:
@@ -98,7 +110,8 @@ def main(plotter: RealTimePlotAPI):
 
         pend.apply_forces(temp_t, wheel)
         pend.draw()
-        plotter.push('s', count, pend.theta % (2*np.pi))
+        
+        plotter.push('s', count, pend.theta)
         plotter.push('v', count, pend.dtheta)
         plotter.push('a', count, pend.ddtheta)
 
