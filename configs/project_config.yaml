@@ -1,0 +1,27 @@
+# Project settings: simulation, fitness weights, spectral targets, evolution
+
+simulation:
+  dt: 0.01
+  duration: 8.0
+  alpha: 0.3
+  nn_torque_scale: 0.15
+  max_wheel_torque: 0.5
+  seismic_frequencies_hz: [0.5, 1.0, 2.0]
+  seismic_amplitudes: [0.3, 0.2, 0.15]
+  initial_angle: 0.12
+
+fitness:
+  stability: 1.0
+  amplification: 0.8
+  noise: 0.5
+  effort: 0.3
+  unsafe: 1.5
+
+spectral:
+  target_band_hz: [0.4, 1.5]
+  noise_band_hz: [3.0, 8.0]
+
+evolution:
+  population_size: 30
+  generations: 25
+  seed: 42

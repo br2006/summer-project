@@ -1,0 +1,12 @@
+# Optional YAML mirror of key NEAT hyperparameters (custom backend uses EvolutionConfig).
+# Primary neat-python settings live in neat_config.ini.
+
+custom_neat:
+  population_size: 30
+  compatibility_threshold: 3.0
+  max_stagnation: 15
+  elitism: 2
+  weight_mutate_rate: 0.8
+  add_conn_rate: 0.05
+  add_node_rate: 0.03
+  toggle_rate: 0.01
