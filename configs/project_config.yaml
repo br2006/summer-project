@@ -9,6 +9,45 @@ simulation:
   seismic_frequencies_hz: [0.5, 1.0, 2.0]
   seismic_amplitudes: [0.3, 0.2, 0.15]
   initial_angle: 0.12
+  total_mass: 0.8
+r_cm: 0.22
+total_inertia: 0.045
+
+wheel_mass: 0.18
+wheel_radius: 0.045
+
+arm_mass: 0.20
+arm_length: 0.28
+
+pendulum_damping: 0.08
+wheel_damping: 0.03
+
+wheel_inertia: 0.00018
+
+max_wheel_torque: 0.25
+max_wheel_speed: 120.0
+
+motor_time_constant: 0.04
+
+resonance_frequency: 11.0
+resonance_gain: 0.015
+
+angle_noise_std: 0.002
+gyro_noise_std: 0.01
+gyro_bias_drift_rate: 0.0001
+
+broadband_noise_gain: 0.04
+
+vibration_freqs_hz:
+  - 3.0
+  - 7.0
+
+vibration_amps:
+  - 0.03
+  - 0.02
+
+impulse_probability: 0.001
+impulse_magnitude: 0.25
 
 fitness:
   stability: 1.0
@@ -23,5 +62,5 @@ spectral:
 
 evolution:
   population_size: 30
-  generations: 25
+  generations: 10 
   seed: 42

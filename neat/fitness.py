@@ -59,7 +59,9 @@ def noise_metric(spectral) -> float:
 def effort_metric(result: SimulationResult) -> float:
     """E: penalty for excessive NN and total control activity."""
     nn_rms = float(np.sqrt(np.mean(result.nn_output ** 2)))
-    torque_rms = float(np.sqrt(np.mean(result.total_torque ** 2)))
+    torque_rms = float(
+    np.sqrt(np.mean(result.actual_torque ** 2))
+    )
     return 0.5 * nn_rms + 0.5 * torque_rms
 
 
