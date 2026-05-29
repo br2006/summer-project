@@ -1,12 +1,15 @@
 """
-Simple reaction-wheel inverted pendulum simulation (placeholder physics).
+Reaction-wheel inverted pendulum simulation with realistic second-order effects.
 
-This is intentionally low-fidelity: the goal is a debuggable end-to-end NEAT loop,
-not accurate multibody dynamics. Replace integrate_step() later with a real model.
-
-Control architecture:
-  u_total = u_PID + alpha * u_NN
-where u_PID comes from an external placeholder and u_NN from the NEAT network.
+Still intentionally lightweight and planar for efficient NEAT training,
+but includes:
+- compound pendulum dynamics
+- motor lag
+- wheel saturation
+- damping/friction
+- noisy sensing
+- tabletop disturbance approximation
+- structural resonance approximation
 """
 
 from __future__ import annotations
@@ -17,108 +20,237 @@ from typing import Callable, List, Optional
 import numpy as np
 
 from control.hybrid_controller import HybridController
-from control.pid_interface import PlaceholderPIDController
+from control.pid_interface import ReactionWheelPIDController
 from neat.genome import Genome
 from neat.network import FeedforwardNetwork
 from simulation.actuators import SimulatedActuator
+from simulation.disturbance import DisturbanceGenerator
 from simulation.sensors import SimulatedSensor
 
 
 @dataclass
 class SimulationResult:
-    """
-    Time-series logs from one rollout used for fitness and FFT analysis.
-
-    All arrays have length = num_steps.
-    """
-
     time: np.ndarray
     angle: np.ndarray
     angular_velocity: np.ndarray
     base_acceleration: np.ndarray
     wheel_velocity: np.ndarray
+
     nn_output: np.ndarray
     pid_output: np.ndarray
-    total_torque: np.ndarray
+
+    commanded_torque: np.ndarray
+    actual_torque: np.ndarray
+
+    resonance_signal: np.ndarray
+
     seismic_input: np.ndarray
 
 
 @dataclass
 class PendulumEnvConfig:
-    """Physical and simulation parameters (tunable via configs/project_config.yaml)."""
+    """Physical and simulation parameters."""
 
     dt: float = 0.01
     duration: float = 10.0
+
     gravity: float = 9.81
-    pendulum_length: float = 0.5
-    pendulum_mass: float = 0.2
-    pendulum_damping: float = 0.05
-    wheel_inertia: float = 0.01
-    wheel_damping: float = 0.02
-    max_wheel_torque: float = 0.5
-    max_wheel_speed: float = 30.0
+
+    # Compound pendulum properties
+    total_mass: float = 0.8
+    r_cm: float = 0.22
+    total_inertia: float = 0.045
+
+    # Physical subcomponents
+    wheel_mass: float = 0.18
+    wheel_radius: float = 0.045
+
+    arm_mass: float = 0.20
+    arm_length: float = 0.28
+
+    # Damping/friction
+    pendulum_damping: float = 0.08
+    wheel_damping: float = 0.03
+
+    # Reaction wheel
+    wheel_inertia: float = 0.00018
+    max_wheel_torque: float = 0.25
+    max_wheel_speed: float = 120.0
+
+    # Motor dynamics
+    motor_time_constant: float = 0.04
+
+    # NN blending
     nn_torque_scale: float = 0.15
     alpha: float = 0.3
-    # Seismic excitation: sum of sinusoids in rad/s
-    seismic_frequencies_hz: List[float] = field(default_factory=lambda: [0.5, 1.0, 2.0])
-    seismic_amplitudes: List[float] = field(default_factory=lambda: [0.3, 0.2, 0.15])
+
+    # Initial conditions
     initial_angle: float = 0.15
     initial_omega: float = 0.0
+
+    # Resonance approximation
+    resonance_frequency: float = 11.0
+    resonance_gain: float = 0.015
+
+    # Sensor noise
+    angle_noise_std: float = 0.002
+    gyro_noise_std: float = 0.01
+    gyro_bias_drift_rate: float = 0.0001
+
+    # Disturbance model
+    broadband_noise_gain: float = 0.04
+
+    vibration_freqs_hz: List[float] = field(
+        default_factory=lambda: [3.0, 7.0]
+    )
+
+    vibration_amps: List[float] = field(
+        default_factory=lambda: [0.03, 0.02]
+    )
+
+    impulse_probability: float = 0.001
+    impulse_magnitude: float = 0.25
 
 
 class PendulumEnv:
     """
-    Placeholder environment integrating pendulum + reaction wheel + hybrid control.
+    Planar reaction-wheel pendulum environment for NEAT training.
     """
 
-    def __init__(self, config: Optional[PendulumEnvConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[PendulumEnvConfig] = None,
+    ) -> None:
+
         self.config = config or PendulumEnvConfig()
-        self.sensor = SimulatedSensor()
+
+        self.sensor = SimulatedSensor(
+            angle_noise_std=self.config.angle_noise_std,
+            gyro_noise_std=self.config.gyro_noise_std,
+            gyro_bias_drift_rate=self.config.gyro_bias_drift_rate,
+        )
+
         self.actuator = SimulatedActuator()
-        self.pid = PlaceholderPIDController()
+
+        self.pid = ReactionWheelPIDController(
+          kp=1.8,
+          ki=0.0,
+          kd=0.45,
+          dt=self.config.dt,
+        )
+
         self.controller = HybridController(
             pid=self.pid,
             alpha=self.config.alpha,
             nn_torque_scale=self.config.nn_torque_scale,
         )
 
-    def _seismic_accel(self, t: float) -> float:
-        """Synthetic base acceleration (ground motion) driving the cart/pivot."""
+        self.disturbance = DisturbanceGenerator(
+            dt=self.config.dt,
+            broadband_gain=self.config.broadband_noise_gain,
+            vibration_freqs=self.config.vibration_freqs_hz,
+            vibration_amps=self.config.vibration_amps,
+            impulse_probability=self.config.impulse_probability,
+            impulse_magnitude=self.config.impulse_magnitude,
+        )
+
+        # Actual motor torque after lag dynamics.
+        self.actual_torque = 0.0
+
+    def _resonance_disturbance(
+        self,
+        t: float,
+        torque: float,
+    ) -> float:
+
         cfg = self.config
-        a = 0.0
-        for f, amp in zip(cfg.seismic_frequencies_hz, cfg.seismic_amplitudes):
-            a += amp * np.sin(2.0 * np.pi * f * t)
-        return a
+
+        amp = cfg.resonance_gain * abs(torque)
+
+        return amp * np.sin(
+            2.0 * np.pi * cfg.resonance_frequency * t
+        )
 
     def _integrate_step(
         self,
         theta: float,
         omega: float,
         wheel_omega: float,
-        torque: float,
-        base_accel: float,
+        torque_cmd: float,
+        disturbance: float,
+        resonance: float,
         dt: float,
     ) -> tuple[float, float, float]:
-        """
-        Euler integration of a lumped inverted-pendulum + reaction wheel model.
 
-        The pendulum feels gravity, damping, seismic base motion, and wheel torque.
-        """
         cfg = self.config
-        m, g, l = cfg.pendulum_mass, cfg.gravity, cfg.pendulum_length
-        # Simplified moment balance (not rigorous — sufficient for NEAT prototyping).
-        theta_dd = (m * g * l * np.sin(theta) - cfg.pendulum_damping * omega) / (
-            m * l ** 2
+
+        # Motor lag dynamics
+        self.actual_torque += (
+            dt / cfg.motor_time_constant
+        ) * (
+            torque_cmd - self.actual_torque
         )
-        theta_dd += base_accel / l
-        theta_dd += torque / (cfg.wheel_inertia + m * l ** 2)
 
-        wheel_dd = torque / cfg.wheel_inertia - cfg.wheel_damping * wheel_omega
+        self.actual_torque = np.clip(
+            self.actual_torque,
+            -cfg.max_wheel_torque,
+            cfg.max_wheel_torque,
+        )
 
+        # Wheel saturation
+        if (
+            wheel_omega >= cfg.max_wheel_speed
+            and self.actual_torque > 0
+        ):
+            self.actual_torque = 0.0
+
+        if (
+            wheel_omega <= -cfg.max_wheel_speed
+            and self.actual_torque < 0
+        ):
+            self.actual_torque = 0.0
+
+        # Gravity torque
+        tau_gravity = (
+            cfg.total_mass
+            * cfg.gravity
+            * cfg.r_cm
+            * np.sin(theta)
+        )
+
+        # Damping
+        tau_damping = -cfg.pendulum_damping * omega
+
+        # Total torque
+        tau_total = (
+            tau_gravity
+            + tau_damping
+            + disturbance
+            + resonance
+            + self.actual_torque
+        )
+
+        # Pendulum angular acceleration
+        theta_dd = tau_total / cfg.total_inertia
+
+        # Wheel dynamics
+        wheel_dd = (
+            self.actual_torque / cfg.wheel_inertia
+            - cfg.wheel_damping * wheel_omega
+        )
+
+        # Euler integration
         omega_new = omega + theta_dd * dt
         theta_new = theta + omega_new * dt
+
         wheel_new = wheel_omega + wheel_dd * dt
-        wheel_new = np.clip(wheel_new, -cfg.max_wheel_speed, cfg.max_wheel_speed)
+
+        wheel_new = np.clip(
+            wheel_new,
+            -cfg.max_wheel_speed,
+            cfg.max_wheel_speed,
+        )
+
         return theta_new, omega_new, wheel_new
 
     def run_episode(
@@ -127,16 +259,27 @@ class PendulumEnv:
         genome: Optional[Genome] = None,
     ) -> SimulationResult:
         """
-        Simulate one episode; provide either a FeedforwardNetwork or Genome.
+        Simulate one rollout episode.
         """
+
         if network is None and genome is not None:
             network = FeedforwardNetwork(genome)
+
         if network is None:
-            raise ValueError("run_episode requires network or genome")
+            raise ValueError(
+                "run_episode requires network or genome"
+            )
 
         cfg = self.config
+
         steps = int(cfg.duration / cfg.dt)
-        t_arr = np.linspace(0, cfg.duration, steps, endpoint=False)
+
+        t_arr = np.linspace(
+            0,
+            cfg.duration,
+            steps,
+            endpoint=False,
+        )
 
         theta = cfg.initial_angle
         omega = cfg.initial_omega
@@ -146,29 +289,74 @@ class PendulumEnv:
         omegas = np.zeros(steps)
         accels = np.zeros(steps)
         wheels = np.zeros(steps)
+
         nn_out = np.zeros(steps)
         pid_out = np.zeros(steps)
-        total_out = np.zeros(steps)
+
+        torque_cmd_log = np.zeros(steps)
+        torque_actual_log = np.zeros(steps)
+
+        resonance_log = np.zeros(steps)
+
         seismic = np.zeros(steps)
 
         for i, t in enumerate(t_arr):
-            base_a = self._seismic_accel(t)
+
+            base_a = self.disturbance.sample(t)
+
             seismic[i] = base_a
 
-            self.sensor.update_raw(theta, omega, base_a, wheel_omega)
+            self.sensor.update_raw(
+                theta,
+                omega,
+                base_a,
+                wheel_omega,
+            )
+
             reading = self.sensor.read()
-            u_nn = float(network.activate(reading.as_array())[0])
+
+            u_nn = float(
+                network.activate(
+                    reading.as_array()
+                )[0]
+            )
+
             u_pid = self.pid.compute(reading)
-            torque = self.controller.compute_total_torque(u_pid, u_nn)
-            torque = np.clip(torque, -cfg.max_wheel_torque, cfg.max_wheel_torque)
+
+            torque = self.controller.compute_total_torque(
+                u_pid,
+                u_nn,
+            )
+
+            torque = np.clip(
+                torque,
+                -cfg.max_wheel_torque,
+                cfg.max_wheel_torque,
+            )
+
+            resonance = self._resonance_disturbance(
+                t,
+                torque,
+            )
+
+            theta, omega, wheel_omega = self._integrate_step(
+                theta,
+                omega,
+                wheel_omega,
+                torque,
+                base_a,
+                resonance,
+                cfg.dt,
+            )
 
             nn_out[i] = u_nn
             pid_out[i] = u_pid
-            total_out[i] = torque
 
-            theta, omega, wheel_omega = self._integrate_step(
-                theta, omega, wheel_omega, torque, base_a, cfg.dt
-            )
+            torque_cmd_log[i] = torque
+            torque_actual_log[i] = self.actual_torque
+
+            resonance_log[i] = resonance
+
             angles[i] = theta
             omegas[i] = omega
             accels[i] = base_a
@@ -182,12 +370,17 @@ class PendulumEnv:
             wheel_velocity=wheels,
             nn_output=nn_out,
             pid_output=pid_out,
-            total_torque=total_out,
+            commanded_torque=torque_cmd_log,
+            actual_torque=torque_actual_log,
+            resonance_signal=resonance_log,
             seismic_input=seismic,
         )
 
-    def make_rollout_fn(self, genome: Genome) -> Callable[[], SimulationResult]:
-        """Convenience wrapper for fitness evaluators."""
+    def make_rollout_fn(
+        self,
+        genome: Genome,
+    ) -> Callable[[], SimulationResult]:
+
         net = FeedforwardNetwork(genome)
 
         def rollout() -> SimulationResult:
