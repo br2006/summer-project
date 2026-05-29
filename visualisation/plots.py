@@ -64,6 +64,45 @@ def plot_species_history(
         plt.close(fig)
 
 
+def plot_weight_schedule_history(
+    generations: List[float],
+    stability_weights: List[float],
+    amplification_weights: List[float],
+    sigmoid_values: Optional[List[float]] = None,
+    save_path: Optional[Path] = None,
+    show: bool = True,
+) -> None:
+    """
+    Plot generation-dependent fitness schedule diagnostics.
+
+    This visualization helps verify that the weighting schedule transitions
+    smoothly from stability-dominant to amplification-dominant optimization.
+    """
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(generations, stability_weights, label="Stability weight", color="royalblue", linewidth=2)
+    ax.plot(generations, amplification_weights, label="Amplification weight", color="darkorange", linewidth=2)
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Weight")
+    ax.set_title("Generation-Dependent Fitness Weights")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left")
+
+    if sigmoid_values is not None and len(sigmoid_values) == len(generations):
+        ax2 = ax.twinx()
+        ax2.plot(generations, sigmoid_values, label="Sigmoid(g)", color="gray", linestyle="--", alpha=0.8)
+        ax2.set_ylabel("Sigmoid output")
+        ax2.set_ylim(0.0, 1.0)
+        ax2.legend(loc="upper right")
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150)
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def plot_fft(
     signal: np.ndarray,
     sample_rate_hz: float,

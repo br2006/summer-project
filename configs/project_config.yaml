@@ -56,6 +56,20 @@ fitness:
   effort: 0.3
   unsafe: 1.5
 
+# Smooth generation-dependent scheduling for the two main objectives.
+# sigmoid(g) = 1 / (1 + exp(-k * (g - midpoint)))
+#
+# amplification(g) = amp_min + (amp_max - amp_min) * sigmoid(g)
+# stability(g)     = stab_max - (stab_max - stab_min) * sigmoid(g)
+schedule:
+  max_generations: 500
+  midpoint: 250
+  k: 0.025
+  stab_max: 3.0
+  stab_min: 0.8
+  amp_min: 0.5
+  amp_max: 3.0
+
 spectral:
   target_band_hz: [0.4, 1.5]
   noise_band_hz: [3.0, 8.0]

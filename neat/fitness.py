@@ -8,11 +8,15 @@ effort, and unsafe-behaviour penalties. FFT analysis drives the spectral terms.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Dict, List
 
 import numpy as np
 
-from config.settings import FitnessWeights, ProjectConfig, weights_for_generation
+from config.settings import (
+    FitnessWeights,
+    ProjectConfig,
+    scheduled_weights_for_generation,
+)
 from neat.genome import Genome
 from neat.network import FeedforwardNetwork
 from signal_processing.spectral_metrics import compute_spectral_metrics
@@ -29,6 +33,16 @@ class FitnessBreakdown:
     noise: float
     effort: float
     unsafe: float
+
+
+@dataclass
+class WeightScheduleSnapshot:
+    """Per-generation schedule diagnostics for logging/plotting."""
+
+    generation: int
+    sigmoid_output: float
+    stability_weight: float
+    amplification_weight: float
 
 
 def stability_metric(result: SimulationResult) -> float:
@@ -134,11 +148,46 @@ class FitnessEvaluator:
         self.config = config
         self.env = PendulumEnv(config.simulation)
         self.generation = 0
+        self.weight_schedule_history: List[WeightScheduleSnapshot] = []
+        self._last_logged_generation: int = -1
+
+    def _record_generation_schedule(self) -> FitnessWeights:
+        """
+        Compute and cache generation-adjusted weights for diagnostics.
+
+        This logs one schedule snapshot per generation to avoid duplicated
+        entries when many genomes are evaluated in the same generation.
+        """
+        scheduled = scheduled_weights_for_generation(self.config, self.generation)
+        if self.generation != self._last_logged_generation:
+            self.weight_schedule_history.append(
+                WeightScheduleSnapshot(
+                    generation=self.generation,
+                    sigmoid_output=scheduled.sigmoid_output,
+                    stability_weight=scheduled.weights.stability,
+                    amplification_weight=scheduled.weights.amplification,
+                )
+            )
+            self._last_logged_generation = self.generation
+        return scheduled.weights
+
+    def get_weight_schedule_history(self) -> Dict[str, List[float]]:
+        """Return schedule diagnostics as plotting-friendly arrays."""
+        return {
+            "generation": [float(s.generation) for s in self.weight_schedule_history],
+            "sigmoid": [s.sigmoid_output for s in self.weight_schedule_history],
+            "stability_weight": [s.stability_weight for s in self.weight_schedule_history],
+            "amplification_weight": [s.amplification_weight for s in self.weight_schedule_history],
+        }
+
+    def get_generation_weights(self) -> FitnessWeights:
+        """Public accessor for generation-adjusted weights + schedule logging."""
+        return self._record_generation_schedule()
 
     def evaluate_genome(self, genome: Genome) -> float:
         network = FeedforwardNetwork(genome)
         result = self.env.run_episode(network=network)
-        weights = weights_for_generation(self.config, self.generation)
+        weights = self.get_generation_weights()
         sample_rate = 1.0 / self.config.simulation.dt
         breakdown = evaluate_rollout(
             result,

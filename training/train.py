@@ -9,6 +9,7 @@ Supports two backends:
 from __future__ import annotations
 
 import argparse
+import csv
 import pickle
 import sys
 from pathlib import Path
@@ -27,7 +28,50 @@ from neat.fitness import FitnessEvaluator
 from visualisation.plots import (
     plot_fitness_history,
     plot_species_history,
+    plot_weight_schedule_history,
 )
+
+
+def _save_weight_schedule_diagnostics(
+    evaluator: FitnessEvaluator,
+    output_dir: Path,
+    show_plots: bool,
+    filename_prefix: str = "",
+) -> None:
+    """
+    Persist generation-dependent schedule diagnostics and optionally plot them.
+
+    Records sigmoid(g), stability weight, and amplification weight for each
+    generation so schedule behaviour can be inspected after training.
+    """
+    history = evaluator.get_weight_schedule_history()
+    generations = history.get("generation", [])
+
+    if not generations:
+        return
+
+    prefix = f"{filename_prefix}_" if filename_prefix else ""
+
+    csv_path = output_dir / f"{prefix}weight_schedule_history.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["generation", "sigmoid", "stability_weight", "amplification_weight"])
+        for row in zip(
+            history["generation"],
+            history["sigmoid"],
+            history["stability_weight"],
+            history["amplification_weight"],
+        ):
+            writer.writerow(row)
+
+    plot_weight_schedule_history(
+        generations=history["generation"],
+        stability_weights=history["stability_weight"],
+        amplification_weights=history["amplification_weight"],
+        sigmoid_values=history["sigmoid"],
+        save_path=output_dir / f"{prefix}weight_schedule_history.png",
+        show=show_plots,
+    )
 
 
 # ============================================================
@@ -117,6 +161,12 @@ def train_custom(
         show=show_plots,
     )
 
+    _save_weight_schedule_diagnostics(
+        evaluator=evaluator,
+        output_dir=output_dir,
+        show_plots=show_plots,
+    )
+
     print(
         f"Training complete. "
         f"Best fitness: "
@@ -149,6 +199,8 @@ def train_neat_python(
 
     def eval_genomes(genomes, config_obj):
 
+        evaluator.generation = eval_genomes.current_generation
+
         for _gid, genome in genomes:
 
             genome.fitness = _evaluate_neat_python_genome(
@@ -156,6 +208,10 @@ def train_neat_python(
                 config_obj,
                 evaluator,
             )
+
+        eval_genomes.current_generation += 1
+
+    eval_genomes.current_generation = 0
 
     population = neat.Population(config)
 
@@ -202,6 +258,13 @@ def train_neat_python(
             show=show_plots,
         )
 
+    _save_weight_schedule_diagnostics(
+        evaluator=evaluator,
+        output_dir=output_dir,
+        show_plots=show_plots,
+        filename_prefix="neatpy",
+    )
+
     print(
         f"neat-python winner fitness: "
         f"{best_genome.fitness}"
@@ -219,10 +282,6 @@ def _evaluate_neat_python_genome(
 ) -> float:
 
     import neat
-
-    from config.settings import (
-        weights_for_generation,
-    )
 
     from control.hybrid_controller import (
         HybridController,
@@ -384,10 +443,7 @@ def _evaluate_neat_python_genome(
         seismic_input=seismic,
     )
 
-    weights = weights_for_generation(
-        evaluator.config,
-        evaluator.generation,
-    )
+    weights = evaluator.get_generation_weights()
 
     breakdown = evaluate_rollout(
         result,
