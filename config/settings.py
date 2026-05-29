@@ -89,6 +89,49 @@ class ProjectConfig:
     seed: int = 42
 
 
+def _apply_simulation_config(cfg: ProjectConfig, data: dict) -> None:
+    """
+    Apply simulation-related YAML keys into cfg.simulation.
+
+    Supports:
+    - canonical nested keys under `simulation:`
+    - legacy top-level simulation keys
+    - alias mapping from seismic_* names to vibration_* names
+    """
+    alias_map = {
+        "seismic_frequencies_hz": "vibration_freqs_hz",
+        "seismic_amplitudes": "vibration_amps",
+    }
+
+    reserved_top_level = {
+        "simulation",
+        "fitness",
+        "spectral",
+        "schedule",
+        "evolution",
+    }
+
+    # 1) Legacy top-level simulation keys (lowest priority)
+    for raw_key, value in data.items():
+        if raw_key in reserved_top_level:
+            continue
+
+        key = alias_map.get(raw_key, raw_key)
+        if hasattr(cfg.simulation, key):
+            setattr(cfg.simulation, key, value)
+
+    # 2) Canonical nested simulation keys (highest priority)
+    simulation_data = dict(data.get("simulation") or {})
+
+    for old_key, new_key in alias_map.items():
+        if old_key in simulation_data and new_key not in simulation_data:
+            simulation_data[new_key] = simulation_data[old_key]
+
+    for key, value in simulation_data.items():
+        if hasattr(cfg.simulation, key):
+            setattr(cfg.simulation, key, value)
+
+
 def logistic_sigmoid(generation: int, midpoint: float, k: float) -> float:
     """Standard logistic sigmoid used for smooth fitness-weight transitions."""
     return 1.0 / (1.0 + exp(-k * (float(generation) - midpoint)))
@@ -130,10 +173,7 @@ def load_project_config(path: Optional[Path] = None) -> ProjectConfig:
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     cfg = ProjectConfig()
-    if "simulation" in data:
-        for k, v in data["simulation"].items():
-            if hasattr(cfg.simulation, k):
-                setattr(cfg.simulation, k, v)
+    _apply_simulation_config(cfg, data)
     if "fitness" in data:
         for k, v in data["fitness"].items():
             if hasattr(cfg.fitness, k):
