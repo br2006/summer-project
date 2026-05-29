@@ -24,6 +24,7 @@ from control.pid_interface import ReactionWheelPIDController
 from neat.genome import Genome
 from neat.network import FeedforwardNetwork
 from simulation.actuators import SimulatedActuator
+from simulation.compound_pendulum import CompoundPendulumProperties
 from simulation.disturbance import DisturbanceGenerator
 from simulation.sensors import SimulatedSensor
 
@@ -56,24 +57,23 @@ class PendulumEnvConfig:
 
     gravity: float = 9.81
 
-    # Compound pendulum properties
-    total_mass: float = 0.8
-    r_cm: float = 0.22
-    total_inertia: float = 0.045
-
-    # Physical subcomponents
-    wheel_mass: float = 0.18
-    wheel_radius: float = 0.045
-
+    # Physical subcomponents: rigid compound pendulum
     arm_mass: float = 0.20
     arm_length: float = 0.28
+
+    motor_mass: float = 0.42
+    motor_radius: float = 0.03
+    motor_length: float = 0.05
+
+    wheel_mass: float = 0.18
+    wheel_radius: float = 0.045
+    wheel_thickness: float = 0.012
 
     # Damping/friction
     pendulum_damping: float = 0.08
     wheel_damping: float = 0.03
 
     # Reaction wheel
-    wheel_inertia: float = 0.00018
     max_wheel_torque: float = 0.25
     max_wheel_speed: float = 120.0
 
@@ -124,6 +124,26 @@ class PendulumEnv:
 
         self.config = config or PendulumEnvConfig()
 
+        self.compound_properties = CompoundPendulumProperties(
+            arm_mass=self.config.arm_mass,
+            arm_length=self.config.arm_length,
+            motor_mass=self.config.motor_mass,
+            motor_radius=self.config.motor_radius,
+            motor_length=self.config.motor_length,
+            wheel_mass=self.config.wheel_mass,
+            wheel_radius=self.config.wheel_radius,
+            wheel_thickness=self.config.wheel_thickness,
+            gravity=self.config.gravity,
+        )
+
+        self.mass_properties = self.compound_properties.debug_summary()
+        self.total_mass = self.mass_properties["total_mass"]
+        self.r_cm = self.mass_properties["center_of_mass"]
+        self.total_inertia = self.mass_properties["total_inertia_about_pivot"]
+        self.wheel_inertia = self.mass_properties["wheel_inertia_cm"]
+
+        self._print_mass_property_debug()
+
         self.sensor = SimulatedSensor(
             angle_noise_std=self.config.angle_noise_std,
             gyro_noise_std=self.config.gyro_noise_std,
@@ -156,6 +176,19 @@ class PendulumEnv:
 
         # Actual motor torque after lag dynamics.
         self.actual_torque = 0.0
+
+    def _print_mass_property_debug(self) -> None:
+
+        p = self.mass_properties
+
+        print("[CompoundPendulumProperties] arm inertia about pivot:", p["arm_inertia_about_pivot"])
+        print("[CompoundPendulumProperties] motor inertia about pivot:", p["motor_inertia_about_pivot"])
+        print("[CompoundPendulumProperties] wheel inertia about pivot:", p["wheel_inertia_about_pivot"])
+        print("[CompoundPendulumProperties] total mass:", p["total_mass"])
+        print("[CompoundPendulumProperties] center of mass:", p["center_of_mass"])
+        print("[CompoundPendulumProperties] total inertia about pivot:", p["total_inertia_about_pivot"])
+        print("[CompoundPendulumProperties] natural frequency:", p["natural_frequency"])
+        print("[CompoundPendulumProperties] oscillation period:", p["oscillation_period"])
 
     def _resonance_disturbance(
         self,
@@ -212,9 +245,9 @@ class PendulumEnv:
 
         # Gravity torque
         tau_gravity = (
-            cfg.total_mass
+            self.total_mass
             * cfg.gravity
-            * cfg.r_cm
+            * self.r_cm
             * np.sin(theta)
         )
 
@@ -231,11 +264,11 @@ class PendulumEnv:
         )
 
         # Pendulum angular acceleration
-        theta_dd = tau_total / cfg.total_inertia
+        theta_dd = tau_total / self.total_inertia
 
         # Wheel dynamics
         wheel_dd = (
-            self.actual_torque / cfg.wheel_inertia
+            self.actual_torque / self.wheel_inertia
             - cfg.wheel_damping * wheel_omega
         )
 

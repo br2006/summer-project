@@ -9,20 +9,19 @@ simulation:
   initial_angle: 0.12
   initial_omega: 0.0
 
-  total_mass: 0.8
-  r_cm: 0.22
-  total_inertia: 0.045
-
-  wheel_mass: 0.18
-  wheel_radius: 0.045
-
   arm_mass: 0.20
   arm_length: 0.28
 
+  motor_mass: 0.42
+  motor_radius: 0.03
+  motor_length: 0.05
+
+  wheel_mass: 0.18
+  wheel_radius: 0.045
+  wheel_thickness: 0.012
+
   pendulum_damping: 0.08
   wheel_damping: 0.03
-
-  wheel_inertia: 0.00018
 
   max_wheel_speed: 120.0
 
