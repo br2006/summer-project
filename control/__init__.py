@@ -1,6 +1,6 @@
-"""Hybrid PID + NEAT control interfaces (PID is external placeholder only)."""
+"""Hybrid PID + NEAT control interfaces."""
 
 from control.hybrid_controller import HybridController
-from control.pid_interface import PIDInterface, PlaceholderPIDController
+from control.pid_interface import PIDInterface, ReactionWheelPIDController
 
-__all__ = ["HybridController", "PIDInterface", "PlaceholderPIDController"]
+__all__ = ["HybridController", "PIDInterface", "ReactionWheelPIDController"]
