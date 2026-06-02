@@ -20,8 +20,9 @@ from neat.evolution import EvolutionConfig, EvolutionEngine
 from neat.fitness import FitnessEvaluator, evaluate_rollout
 from neat.network import FeedforwardNetwork
 from simulation.pendulum_env import PendulumEnv
-from visualisation.network_graph import draw_network_topology
-from visualisation.plots import (
+from visualisation_code.network_graph import draw_network_topology
+from visualisation_code.output import get_output_dir
+from visualisation_code.plots import (
     plot_fft,
     plot_frequency_diagnostics,
     plot_resonance_comparison,
@@ -30,8 +31,12 @@ from visualisation.plots import (
 )
 
 
-def evaluate_best_after_short_train(output_dir: Path, show: bool) -> None:
+
+
+
+def evaluate_best_after_short_train(output_dir: Path | None, show: bool) -> None:
     """Quick demo: train a few generations, then evaluate the best genome."""
+
     project = load_project_config()
     evaluator = FitnessEvaluator(project)
     evo_cfg = EvolutionConfig(population_size=project.population_size)
@@ -69,36 +74,46 @@ def evaluate_best_after_short_train(output_dir: Path, show: bool) -> None:
     print("\nDominant frequency peaks:")
     print_frequency_diagnostics(result)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir = output_dir
+    if figures_dir is None:
+        figures_dir = get_output_dir("evaluation")
+    else:
+        figures_dir.mkdir(parents=True, exist_ok=True)
+
     plot_rollout(
         result,
         target_band_hz=project.spectral.target_band_hz,
-        save_path=output_dir / "rollout.png",
+        save_path=figures_dir / "rollout.png",
         show=show,
     )
     plot_fft(
         result.angle,
         sample_rate,
         title="Pendulum angle FFT",
-        save_path=output_dir / "angle_fft.png",
+        save_path=figures_dir / "angle_fft.png",
         show=show,
     )
     plot_resonance_comparison(
         result,
         project.spectral.target_band_hz,
         project.spectral.noise_band_hz,
-        save_path=output_dir / "resonance_bands.png",
+        save_path=figures_dir / "resonance_bands.png",
         show=show,
     )
     plot_frequency_diagnostics(
         result,
         target_band_hz=project.spectral.target_band_hz,
         noise_band_hz=project.spectral.noise_band_hz,
-        save_path=output_dir / "frequency_diagnostics.png",
+        save_path=figures_dir / "frequency_diagnostics.png",
         show=show,
     )
-    draw_network_topology(genome, save_path=output_dir / "topology.png", show=show)
-    print(f"Evaluation plots saved to {output_dir}")
+    draw_network_topology(genome, save_path=figures_dir / "topology.png", show=show)
+
+    print(f"Evaluation plots saved to {figures_dir}")
+
+
+
+
 
 
 def main() -> None:
@@ -106,11 +121,13 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "outputs" / "evaluation",
+        default=None,
+        help="Optional custom directory for generated figures",
     )
     parser.add_argument("--no-show", action="store_true")
     args = parser.parse_args()
     evaluate_best_after_short_train(args.output, show=not args.no_show)
+
 
 
 if __name__ == "__main__":

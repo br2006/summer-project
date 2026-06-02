@@ -1,3 +1,5 @@
+
+
 """
 Example training loop for NEAT-based supplementary pendulum control.
 
@@ -25,9 +27,11 @@ if str(ROOT) not in sys.path:
 from config.settings import load_project_config
 from neat.evolution import EvolutionConfig, EvolutionEngine
 from neat.fitness import FitnessEvaluator
-from visualisation.plots import (
+from visualisation_code.plots import (
     plot_training_summary,
 )
+from visualisation_code.output import get_output_dir
+
 
 
 def _save_weight_schedule_csv(
@@ -69,7 +73,7 @@ def _save_weight_schedule_csv(
 
 def train_custom(
     config_path: Path | None,
-    output_dir: Path,
+    output_dir: Path | None,
     show_plots: bool,
 ) -> None:
 
@@ -126,15 +130,19 @@ def train_custom(
     # OUTPUTS
     # ====================================================
 
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    if output_dir is not None:
+        figures_dir = output_dir
+        figures_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        figures_dir = get_output_dir("training")
 
     schedule_history = _save_weight_schedule_csv(
         evaluator=evaluator,
-        output_dir=output_dir,
+        output_dir=figures_dir,
     )
+
+
+    
 
     plot_training_summary(
         best=engine.history_best,
@@ -144,7 +152,7 @@ def train_custom(
         stability_weights=schedule_history.get("stability_weight"),
         amplification_weights=schedule_history.get("amplification_weight"),
         sigmoid_values=schedule_history.get("sigmoid"),
-        save_path=output_dir / "training_summary.png",
+        save_path=figures_dir / "training_summary.png",
         show=show_plots,
     )
 
@@ -154,11 +162,12 @@ def train_custom(
         f"{best_genome.fitness:.4f}"
     )
 
-    print(f"Plots saved to {output_dir}")
+    print(f"Plots saved to {figures_dir}")
+
 
 def train_neat_python(
     config_path: Path,
-    output_dir: Path,
+    output_dir: Path | None,
     show_plots: bool,
 ) -> None:
 
@@ -179,29 +188,20 @@ def train_neat_python(
     )
 
     def eval_genomes(genomes, config_obj):
-
         evaluator.generation = eval_genomes.current_generation
-
         for _gid, genome in genomes:
-
             genome.fitness = _evaluate_neat_python_genome(
                 genome,
                 config_obj,
                 evaluator,
             )
-
         eval_genomes.current_generation += 1
 
     eval_genomes.current_generation = 0
 
     population = neat.Population(config)
-
-    population.add_reporter(
-        neat.StdOutReporter(True)
-    )
-
+    population.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
-
     population.add_reporter(stats)
 
     best_genome = population.run(
@@ -218,10 +218,11 @@ def train_neat_python(
 
     print("Saved best genome.")
 
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    if output_dir is not None:
+        figures_dir = output_dir
+        figures_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        figures_dir = get_output_dir("training", subdir="neat_python")
 
     best_history = [
         s.best_genome().fitness
@@ -230,9 +231,11 @@ def train_neat_python(
 
     schedule_history = _save_weight_schedule_csv(
         evaluator=evaluator,
-        output_dir=output_dir,
+        output_dir=figures_dir,
         filename_prefix="neatpy",
     )
+
+    
 
     plot_training_summary(
         best=best_history,
@@ -242,7 +245,7 @@ def train_neat_python(
         stability_weights=schedule_history.get("stability_weight"),
         amplification_weights=schedule_history.get("amplification_weight"),
         sigmoid_values=schedule_history.get("sigmoid"),
-        save_path=output_dir / "training_summary_neatpy.png",
+        save_path=figures_dir / "training_summary_neatpy.png",
         show=show_plots,
     )
 
@@ -250,6 +253,10 @@ def train_neat_python(
         f"neat-python winner fitness: "
         f"{best_genome.fitness}"
     )
+
+    print(f"Plots saved to {figures_dir}")
+
+
 
 
 # ============================================================
@@ -438,68 +445,39 @@ def _evaluate_neat_python_genome(
     return breakdown.total
 
 
+
 # ============================================================
 # MAIN ENTRY
 # ============================================================
 
 def main() -> None:
-
     parser = argparse.ArgumentParser(
-        description=(
-            "Train NEAT supplementary controller"
-        )
+        description="Train NEAT supplementary controller"
     )
-
     parser.add_argument(
         "--backend",
-        choices=[
-            "custom",
-            "neat-python",
-        ],
+        choices=["custom", "neat-python"],
         default="custom",
-        help=(
-            "NEAT implementation "
-            "(custom=educational, "
-            "neat-python=library)"
-        ),
+        help="NEAT implementation (custom=educational, neat-python=library)",
     )
-
     parser.add_argument(
         "--config",
         type=Path,
-        default=(
-            ROOT
-            / "configs"
-            / "project_config.yaml"
-        ),
+        default=ROOT / "configs" / "project_config.yaml",
         help="Project YAML config",
     )
-
     parser.add_argument(
         "--neat-config",
         type=Path,
-        default=(
-            ROOT
-            / "configs"
-            / "neat_config.ini"
-        ),
-        help=(
-            "neat-python .ini config "
-            "(neat-python backend only)"
-        ),
+        default=ROOT / "configs" / "neat_config.ini",
+        help="neat-python .ini config (neat-python backend only)",
     )
-
     parser.add_argument(
         "--output",
         type=Path,
-        default=(
-            ROOT
-            / "outputs"
-            / "training"
-        ),
-        help="Directory for plots and logs",
+        default=None,
+        help="Optional custom directory for generated figures",
     )
-
     parser.add_argument(
         "--no-show",
         action="store_true",
@@ -507,25 +485,14 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-
     show = not args.no_show
 
     if args.backend == "custom":
-
-        train_custom(
-            args.config,
-            args.output,
-            show,
-        )
-
+        train_custom(args.config, args.output, show)
     else:
-
-        train_neat_python(
-            args.neat_config,
-            args.output,
-            show,
-        )
+        train_neat_python(args.neat_config, args.output, show)
 
 
 if __name__ == "__main__":
     main()
+

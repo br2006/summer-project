@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 
 from signal_processing.fft import compute_fft
-from visualisation.plots import plot_fft, plot_fitness_history, plot_species_history
+from visualisation_code.plots import plot_fft, plot_fitness_history, plot_species_history
+
 
 
 def main() -> None:

@@ -1,14 +1,14 @@
 """
-Visualization utilities for training diagnostics and spectral analysis.
+Visualization utilities for training diagnostics, spectral analysis, and rollout diagnostics.
 
-Use these after training/evaluation to inspect fitness trends, FFT spectra,
-and pendulum response time series.
+These helpers are used across training/evaluation scripts to keep plotting consistent
+and presentation-ready.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,13 +16,17 @@ import numpy as np
 from signal_processing.fft import compute_fft
 from simulation.pendulum_env import SimulationResult
 
+SPECTRUM_LINE_COLOR = "#4E79A7"
+TARGET_BAND_COLOR = "#59A14F"
+NOISE_BAND_COLOR = "#E15759"
+
 
 def _dominant_peaks(
     signal: np.ndarray,
     sample_rate_hz: float,
     max_freq_hz: float = 25.0,
     n_peaks: int = 5,
-) -> List[tuple[float, float]]:
+) -> List[Tuple[float, float]]:
     """Return the strongest FFT peaks as (frequency_hz, amplitude)."""
     freqs, amp = compute_fft(signal, sample_rate_hz)
     mask = (freqs > 0.0) & (freqs <= max_freq_hz)
@@ -32,6 +36,30 @@ def _dominant_peaks(
     a_sel = amp[mask]
     peak_idx = np.argsort(a_sel)[-n_peaks:][::-1]
     return [(float(f_sel[i]), float(a_sel[i])) for i in peak_idx]
+
+
+def _infer_sample_rate(result: SimulationResult) -> float:
+    if len(result.time) <= 1:
+        return 100.0
+    dt = float(result.time[1] - result.time[0])
+    return 1.0 / dt if dt > 0 else 100.0
+
+
+def _annotate_peaks(
+    ax: plt.Axes,
+    peaks: Sequence[Tuple[float, float]],
+    max_labels: int = 3,
+) -> None:
+    for freq, amp in peaks[:max_labels]:
+        ax.annotate(
+            f"{freq:.2f} Hz",
+            xy=(freq, amp),
+            xytext=(0, 6),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+            color="#333333",
+        )
 
 
 def plot_fitness_history(
@@ -89,12 +117,7 @@ def plot_weight_schedule_history(
     save_path: Optional[Path] = None,
     show: bool = True,
 ) -> None:
-    """
-    Plot generation-dependent fitness schedule diagnostics.
-
-    This visualization helps verify that the weighting schedule transitions
-    smoothly from stability-dominant to amplification-dominant optimization.
-    """
+    """Plot generation-dependent fitness schedule diagnostics."""
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(generations, stability_weights, label="Stability weight", color="royalblue", linewidth=2)
     ax.plot(generations, amplification_weights, label="Amplification weight", color="darkorange", linewidth=2)
@@ -134,7 +157,6 @@ def plot_training_summary(
     """Create a combined training-progress dashboard for presentation/analysis."""
     fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=False)
 
-    # Panel 1: fitness history
     gens = np.arange(len(best))
     axes[0].plot(gens, best, label="Best fitness", color="steelblue", linewidth=2.2)
     if mean is not None and len(mean) == len(best):
@@ -154,7 +176,6 @@ def plot_training_summary(
             fontsize=9,
         )
 
-    # Panel 2: species diversity
     if species_counts and len(species_counts) > 0:
         axes[1].plot(np.arange(len(species_counts)), species_counts, color="seagreen", linewidth=2)
         axes[1].set_ylabel("# species")
@@ -173,7 +194,6 @@ def plot_training_summary(
         axes[1].set_title("Species diversity", fontsize=12)
     axes[1].grid(True, alpha=0.3)
 
-    # Panel 3: generation-dependent objective schedule
     has_schedule = (
         schedule_generations is not None
         and stability_weights is not None
@@ -241,18 +261,31 @@ def plot_fft(
     signal: np.ndarray,
     sample_rate_hz: float,
     title: str = "FFT",
+    max_freq_hz: Optional[float] = None,
+    annotate_peaks: bool = True,
     save_path: Optional[Path] = None,
     show: bool = True,
 ) -> None:
     """Plot amplitude spectrum of a 1D signal."""
     freqs, amp = compute_fft(signal, sample_rate_hz)
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(freqs, amp, color="purple")
+    fig, ax = plt.subplots(figsize=(8.5, 4.5))
+    ax.plot(freqs, amp, color=SPECTRUM_LINE_COLOR, linewidth=1.6)
+
+    if len(freqs):
+        upper = freqs[-1]
+        if max_freq_hz is not None:
+            upper = min(upper, max_freq_hz)
+        ax.set_xlim(0.0, upper)
+
     ax.set_xlabel("Frequency (Hz)")
     ax.set_ylabel("Amplitude")
     ax.set_title(title)
-    ax.set_xlim(0, min(10.0, freqs[-1] if len(freqs) else 10.0))
     ax.grid(True, alpha=0.3)
+
+    if annotate_peaks and len(freqs) > 0:
+        peaks = _dominant_peaks(signal, sample_rate_hz, max_freq_hz or freqs[-1])
+        _annotate_peaks(ax, peaks)
+
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150)
@@ -268,43 +301,82 @@ def plot_rollout(
     save_path: Optional[Path] = None,
     show: bool = True,
 ) -> None:
-    """
-    Multi-panel plot: angle, torques, and FFT with target band highlighted.
-    """
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=False)
+    """Summarise a rollout with angle/acceleration, control signals, and spectrum."""
 
-    axes[0].plot(result.time, result.angle, label="Angle (rad)")
-    axes[0].plot(
-        result.time,
-        result.base_acceleration * 0.1,
-        label="Base accel. (scaled)",
-        alpha=0.6,
+    time = result.time
+    sample_rate = _infer_sample_rate(result)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8.5), sharex=False)
+
+    ax_angle = axes[0]
+    ax_angle.plot(time, result.angle, color="steelblue", linewidth=2.0, label="Angle (rad)")
+    ax_angle.set_ylabel("Angle (rad)", color="steelblue")
+    ax_angle.tick_params(axis="y", labelcolor="steelblue")
+    ax_angle.grid(True, alpha=0.3)
+
+    ax_accel = ax_angle.twinx()
+    ax_accel.plot(
+        time,
+        result.base_acceleration,
+        color="darkorange",
+        linewidth=1.6,
+        alpha=0.85,
+        label="Base accel. (m/s²)",
     )
-    axes[0].set_ylabel("Angle")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+    ax_accel.set_ylabel("Base acceleration (m/s²)", color="darkorange")
+    ax_accel.tick_params(axis="y", labelcolor="darkorange")
 
-    axes[1].plot(result.time, result.pid_output, label="PID (norm)")
-    axes[1].plot(result.time, result.nn_output, label="NN (norm)")
-    axes[1].plot(result.time, result.commanded_torque, label="Commanded torque", alpha=0.7)
-    axes[1].set_ylabel("Control")
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+    lines, labels = ax_angle.get_legend_handles_labels()
+    lines2, labels2 = ax_accel.get_legend_handles_labels()
+    ax_angle.legend(lines + lines2, labels + labels2, loc="upper right", frameon=False)
 
-    sample_rate = 1.0 / (result.time[1] - result.time[0]) if len(result.time) > 1 else 100.0
+    ax_ctrl = axes[1]
+    ax_ctrl.plot(time, result.pid_output, color="seagreen", linewidth=1.8, label="PID output")
+    ax_ctrl.plot(time, result.nn_output, color="purple", linewidth=1.6, alpha=0.9, label="NN output")
+    ax_ctrl.set_ylabel("Controller output (norm)")
+    ax_ctrl.grid(True, alpha=0.3)
+
+    ax_torque = ax_ctrl.twinx()
+    ax_torque.plot(
+        time,
+        result.commanded_torque,
+        color="#1f77b4",
+        linestyle="--",
+        linewidth=1.6,
+        alpha=0.9,
+        label="Commanded torque",
+    )
+    ax_torque.plot(time, result.actual_torque, color="#d62728", linewidth=1.6, label="Actual torque")
+    ax_torque.set_ylabel("Torque (Nm)")
+
+    ctrl_lines, ctrl_labels = ax_ctrl.get_legend_handles_labels()
+    torque_lines, torque_labels = ax_torque.get_legend_handles_labels()
+    ax_ctrl.legend(ctrl_lines + torque_lines, ctrl_labels + torque_labels, loc="upper right", frameon=False)
+
+    ax_fft = axes[2]
     freqs, amp = compute_fft(result.angle, sample_rate)
-    axes[2].plot(freqs, amp, color="purple")
+    ax_fft.plot(freqs, amp, color=SPECTRUM_LINE_COLOR, linewidth=1.8)
     if target_band_hz and len(target_band_hz) >= 2:
-        axes[2].axvspan(target_band_hz[0], target_band_hz[1], alpha=0.2, color="green", label="Target band")
-    axes[2].set_xlabel("Frequency (Hz)")
-    axes[2].set_ylabel("Amplitude")
-    axes[2].set_title("Pendulum angle spectrum")
-    axes[2].set_xlim(0, 8)
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
+        ax_fft.axvspan(
+            target_band_hz[0],
+            target_band_hz[1],
+            alpha=0.18,
+            color=TARGET_BAND_COLOR,
+            label="Target band",
+        )
+    ax_fft.set_xlabel("Frequency (Hz)")
+    ax_fft.set_ylabel("Amplitude")
+    ax_fft.set_title("Pendulum angle spectrum")
+    if len(freqs):
+        ax_fft.set_xlim(0, min(8.0, freqs[-1]))
+        _annotate_peaks(ax_fft, _dominant_peaks(result.angle, sample_rate, max_freq_hz=8.0))
+    ax_fft.grid(True, alpha=0.3)
+    handles, labels = ax_fft.get_legend_handles_labels()
+    if handles:
+        ax_fft.legend(handles, labels, loc="upper right", frameon=False)
 
-    fig.suptitle("Rollout: hybrid PID + NEAT control")
-    fig.tight_layout()
+    fig.suptitle("Rollout diagnostics: hybrid PID + NEAT controller", fontsize=14)
+    fig.tight_layout(rect=(0.02, 0.04, 0.98, 0.97))
     if save_path:
         fig.savefig(save_path, dpi=150)
     if show:
@@ -320,14 +392,8 @@ def plot_frequency_diagnostics(
     save_path: Optional[Path] = None,
     show: bool = True,
 ) -> None:
-    """
-    Plot FFTs of the accelerometer input, pendulum response, NN output, and torque.
-
-    This is designed for the tabletop-footstep demo: it shows whether the
-    controller/pendulum response is strongest near the footstep/natural-frequency
-    target band while avoiding table-ringing frequencies.
-    """
-    sample_rate = 1.0 / (result.time[1] - result.time[0]) if len(result.time) > 1 else 100.0
+    """Plot FFTs of key signals from a rollout for frequency-domain analysis."""
+    sample_rate = _infer_sample_rate(result)
     series = [
         ("Base accelerometer (m/s²)", result.base_acceleration),
         ("Pendulum angle (rad)", result.angle),
@@ -338,15 +404,16 @@ def plot_frequency_diagnostics(
     fig, axes = plt.subplots(len(series), 1, figsize=(10, 10), sharex=True)
     for ax, (label, signal) in zip(axes, series):
         freqs, amp = compute_fft(signal, sample_rate)
-        ax.plot(freqs, amp, linewidth=1.5)
+        ax.plot(freqs, amp, linewidth=1.5, color=SPECTRUM_LINE_COLOR)
         if target_band_hz and len(target_band_hz) >= 2:
-            ax.axvspan(target_band_hz[0], target_band_hz[1], alpha=0.18, color="green")
+            ax.axvspan(target_band_hz[0], target_band_hz[1], alpha=0.18, color=TARGET_BAND_COLOR)
         if noise_band_hz and len(noise_band_hz) >= 2:
-            ax.axvspan(noise_band_hz[0], noise_band_hz[1], alpha=0.12, color="red")
+            ax.axvspan(noise_band_hz[0], noise_band_hz[1], alpha=0.12, color=NOISE_BAND_COLOR)
         peaks = _dominant_peaks(signal, sample_rate)
         peak_text = ", ".join(f"{f:.2f} Hz" for f, _ in peaks[:3])
         ax.set_ylabel("Amplitude")
         ax.set_title(f"{label} FFT | strongest: {peak_text}")
+        _annotate_peaks(ax, peaks)
         ax.grid(True, alpha=0.3)
 
     axes[-1].set_xlabel("Frequency (Hz)")
@@ -367,7 +434,7 @@ def print_frequency_diagnostics(
     n_peaks: int = 5,
 ) -> None:
     """Print dominant spectral peaks for key rollout signals."""
-    sample_rate = 1.0 / (result.time[1] - result.time[0]) if len(result.time) > 1 else 100.0
+    sample_rate = _infer_sample_rate(result)
     series = [
         ("base_acceleration", result.base_acceleration),
         ("angle", result.angle),
@@ -388,10 +455,10 @@ def plot_resonance_comparison(
     show: bool = True,
 ) -> None:
     """Compare target-band vs noise-band power (amplification diagnostic)."""
-    sample_rate = 1.0 / (result.time[1] - result.time[0]) if len(result.time) > 1 else 100.0
+    sample_rate = _infer_sample_rate(result)
     from signal_processing.spectral_metrics import compute_spectral_metrics
 
-    m = compute_spectral_metrics(
+    metrics = compute_spectral_metrics(
         result.angle,
         result.seismic_input,
         sample_rate,
@@ -400,10 +467,10 @@ def plot_resonance_comparison(
     )
     fig, ax = plt.subplots(figsize=(5, 4))
     labels = ["Target band", "Noise band"]
-    values = [m.target_band_power, m.noise_band_power]
-    ax.bar(labels, values, color=["green", "gray"])
+    values = [metrics.target_band_power, metrics.noise_band_power]
+    ax.bar(labels, values, color=[TARGET_BAND_COLOR, "#BDBDBD"])
     ax.set_ylabel("Band power")
-    ax.set_title(f"Amplification ratio ≈ {m.amplification_ratio:.2f}")
+    ax.set_title(f"Amplification ratio ≈ {metrics.amplification_ratio:.2f}")
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150)

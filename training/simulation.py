@@ -18,7 +18,8 @@ from config.settings import load_project_config
 from neat.genome import Genome, InnovationTracker
 from neat.network import FeedforwardNetwork
 from simulation.pendulum_env import PendulumEnv
-from visualisation.plots import plot_rollout
+from visualisation_code.plots import plot_rollout
+
 
 
 def main() -> None:
