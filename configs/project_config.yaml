@@ -9,16 +9,16 @@ simulation:
   initial_angle: 0.12
   initial_omega: 0.0
 
-  arm_mass: 0.20
-  arm_length: 0.28
+  arm_mass: 0.0099
+  arm_length: 0.115
 
-  motor_mass: 0.42
-  motor_radius: 0.03
-  motor_length: 0.05
+  motor_mass: 0.14
+  motor_radius: 0.02
+  motor_length: 0.035
 
-  wheel_mass: 0.18
-  wheel_radius: 0.045
-  wheel_thickness: 0.012
+  wheel_mass: 0.046
+  wheel_radius: 0.0775
+  wheel_thickness: 0.03
 
   pendulum_damping: 0.08
   wheel_damping: 0.03
