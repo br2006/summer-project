@@ -21,7 +21,13 @@ from neat.fitness import FitnessEvaluator, evaluate_rollout
 from neat.network import FeedforwardNetwork
 from simulation.pendulum_env import PendulumEnv
 from visualisation.network_graph import draw_network_topology
-from visualisation.plots import plot_fft, plot_resonance_comparison, plot_rollout
+from visualisation.plots import (
+    plot_fft,
+    plot_frequency_diagnostics,
+    plot_resonance_comparison,
+    plot_rollout,
+    print_frequency_diagnostics,
+)
 
 
 def evaluate_best_after_short_train(output_dir: Path, show: bool) -> None:
@@ -60,6 +66,9 @@ def evaluate_best_after_short_train(output_dir: Path, show: bool) -> None:
     print(f"  Effort (E):    {breakdown.effort:.4f}")
     print(f"  Unsafe (U):    {breakdown.unsafe:.4f}")
 
+    print("\nDominant frequency peaks:")
+    print_frequency_diagnostics(result)
+
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_rollout(
         result,
@@ -77,7 +86,15 @@ def evaluate_best_after_short_train(output_dir: Path, show: bool) -> None:
     plot_resonance_comparison(
         result,
         project.spectral.target_band_hz,
+        project.spectral.noise_band_hz,
         save_path=output_dir / "resonance_bands.png",
+        show=show,
+    )
+    plot_frequency_diagnostics(
+        result,
+        target_band_hz=project.spectral.target_band_hz,
+        noise_band_hz=project.spectral.noise_band_hz,
+        save_path=output_dir / "frequency_diagnostics.png",
         show=show,
     )
     draw_network_topology(genome, save_path=output_dir / "topology.png", show=show)

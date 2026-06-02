@@ -98,6 +98,7 @@ class PendulumEnvConfig:
     gyro_bias_drift_rate: float = 0.0001
 
     # Disturbance model
+    disturbance_model: str = "sinusoidal"
     broadband_noise_gain: float = 0.04
 
     vibration_freqs_hz: List[float] = field(
@@ -110,6 +111,15 @@ class PendulumEnvConfig:
 
     impulse_probability: float = 0.001
     impulse_magnitude: float = 0.25
+
+    footstep_rate_hz: float = 1.43
+    footstep_jitter: float = 0.12
+    footstep_accel_mps2: float = 0.25
+    footstep_pulse_width_s: float = 0.06
+    table_ring_freqs_hz: List[float] = field(default_factory=lambda: [8.0, 14.0])
+    table_ring_amps_mps2: List[float] = field(default_factory=lambda: [0.08, 0.04])
+    table_ring_decay_s: float = 0.30
+    accelerometer_noise_std_mps2: float = 0.015
 
 
 class PendulumEnv:
@@ -172,6 +182,15 @@ class PendulumEnv:
             vibration_amps=self.config.vibration_amps,
             impulse_probability=self.config.impulse_probability,
             impulse_magnitude=self.config.impulse_magnitude,
+            model=self.config.disturbance_model,
+            footstep_rate_hz=self.config.footstep_rate_hz,
+            footstep_jitter=self.config.footstep_jitter,
+            footstep_accel_mps2=self.config.footstep_accel_mps2,
+            footstep_pulse_width_s=self.config.footstep_pulse_width_s,
+            table_ring_freqs_hz=self.config.table_ring_freqs_hz,
+            table_ring_amps_mps2=self.config.table_ring_amps_mps2,
+            table_ring_decay_s=self.config.table_ring_decay_s,
+            accelerometer_noise_std_mps2=self.config.accelerometer_noise_std_mps2,
         )
 
         # Actual motor torque after lag dynamics.
@@ -210,7 +229,7 @@ class PendulumEnv:
         omega: float,
         wheel_omega: float,
         torque_cmd: float,
-        disturbance: float,
+        base_acceleration: float,
         resonance: float,
         dt: float,
     ) -> tuple[float, float, float]:
@@ -254,11 +273,19 @@ class PendulumEnv:
         # Damping
         tau_damping = -cfg.pendulum_damping * omega
 
+        # Base acceleration torque from a horizontally accelerating support.
+        # The disturbance generator outputs m/s^2, matching a base-mounted
+        # accelerometer. For an inverted pendulum, horizontal base acceleration
+        # creates an inertial force at the centre of mass and therefore a torque
+        # about the pivot. Sign convention: positive base acceleration tends to
+        # rotate the pendulum in the negative theta direction near upright.
+        tau_base = -self.total_mass * self.r_cm * base_acceleration * np.cos(theta)
+
         # Total torque
         tau_total = (
             tau_gravity
             + tau_damping
-            + disturbance
+            + tau_base
             + resonance
             + self.actual_torque
         )
