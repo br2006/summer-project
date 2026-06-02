@@ -120,6 +120,123 @@ def plot_weight_schedule_history(
         plt.close(fig)
 
 
+def plot_training_summary(
+    best: List[float],
+    mean: Optional[List[float]] = None,
+    species_counts: Optional[List[int]] = None,
+    schedule_generations: Optional[List[float]] = None,
+    stability_weights: Optional[List[float]] = None,
+    amplification_weights: Optional[List[float]] = None,
+    sigmoid_values: Optional[List[float]] = None,
+    save_path: Optional[Path] = None,
+    show: bool = True,
+) -> None:
+    """Create a combined training-progress dashboard for presentation/analysis."""
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=False)
+
+    # Panel 1: fitness history
+    gens = np.arange(len(best))
+    axes[0].plot(gens, best, label="Best fitness", color="steelblue", linewidth=2.2)
+    if mean is not None and len(mean) == len(best):
+        axes[0].plot(gens, mean, label="Mean fitness", color="coral", alpha=0.9, linewidth=1.8)
+    axes[0].set_ylabel("Fitness")
+    axes[0].set_title("Training progress", fontsize=12)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="best")
+    if len(best) > 0:
+        axes[0].scatter([gens[-1]], [best[-1]], color="steelblue", zorder=5)
+        axes[0].annotate(
+            f"Final best: {best[-1]:.3f}",
+            xy=(gens[-1], best[-1]),
+            xytext=(-8, 10),
+            textcoords="offset points",
+            ha="right",
+            fontsize=9,
+        )
+
+    # Panel 2: species diversity
+    if species_counts and len(species_counts) > 0:
+        axes[1].plot(np.arange(len(species_counts)), species_counts, color="seagreen", linewidth=2)
+        axes[1].set_ylabel("# species")
+        axes[1].set_title("Species diversity", fontsize=12)
+    else:
+        axes[1].text(
+            0.5,
+            0.5,
+            "Species history unavailable for this backend",
+            ha="center",
+            va="center",
+            transform=axes[1].transAxes,
+            color="0.4",
+        )
+        axes[1].set_ylabel("# species")
+        axes[1].set_title("Species diversity", fontsize=12)
+    axes[1].grid(True, alpha=0.3)
+
+    # Panel 3: generation-dependent objective schedule
+    has_schedule = (
+        schedule_generations is not None
+        and stability_weights is not None
+        and amplification_weights is not None
+        and len(schedule_generations) > 0
+    )
+    if has_schedule:
+        axes[2].plot(
+            schedule_generations,
+            stability_weights,
+            label="Stability weight",
+            color="royalblue",
+            linewidth=2,
+        )
+        axes[2].plot(
+            schedule_generations,
+            amplification_weights,
+            label="Amplification weight",
+            color="darkorange",
+            linewidth=2,
+        )
+        axes[2].set_ylabel("Weight")
+        axes[2].set_title("Fitness-objective schedule", fontsize=12)
+        axes[2].legend(loc="upper left")
+
+        if sigmoid_values is not None and len(sigmoid_values) == len(schedule_generations):
+            ax2 = axes[2].twinx()
+            ax2.plot(
+                schedule_generations,
+                sigmoid_values,
+                label="Sigmoid(g)",
+                color="gray",
+                linestyle="--",
+                alpha=0.8,
+            )
+            ax2.set_ylabel("Sigmoid")
+            ax2.set_ylim(0.0, 1.0)
+    else:
+        axes[2].text(
+            0.5,
+            0.5,
+            "Weight schedule unavailable",
+            ha="center",
+            va="center",
+            transform=axes[2].transAxes,
+            color="0.4",
+        )
+        axes[2].set_ylabel("Weight")
+        axes[2].set_title("Fitness-objective schedule", fontsize=12)
+
+    axes[2].set_xlabel("Generation")
+    axes[2].grid(True, alpha=0.3)
+
+    fig.suptitle("NEAT training summary", fontsize=14)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150)
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def plot_fft(
     signal: np.ndarray,
     sample_rate_hz: float,

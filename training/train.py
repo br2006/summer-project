@@ -26,20 +26,17 @@ from config.settings import load_project_config
 from neat.evolution import EvolutionConfig, EvolutionEngine
 from neat.fitness import FitnessEvaluator
 from visualisation.plots import (
-    plot_fitness_history,
-    plot_species_history,
-    plot_weight_schedule_history,
+    plot_training_summary,
 )
 
 
-def _save_weight_schedule_diagnostics(
+def _save_weight_schedule_csv(
     evaluator: FitnessEvaluator,
     output_dir: Path,
-    show_plots: bool,
     filename_prefix: str = "",
-) -> None:
+) -> dict:
     """
-    Persist generation-dependent schedule diagnostics and optionally plot them.
+    Persist generation-dependent schedule diagnostics to CSV.
 
     Records sigmoid(g), stability weight, and amplification weight for each
     generation so schedule behaviour can be inspected after training.
@@ -48,7 +45,7 @@ def _save_weight_schedule_diagnostics(
     generations = history.get("generation", [])
 
     if not generations:
-        return
+        return history
 
     prefix = f"{filename_prefix}_" if filename_prefix else ""
 
@@ -63,15 +60,7 @@ def _save_weight_schedule_diagnostics(
             history["amplification_weight"],
         ):
             writer.writerow(row)
-
-    plot_weight_schedule_history(
-        generations=history["generation"],
-        stability_weights=history["stability_weight"],
-        amplification_weights=history["amplification_weight"],
-        sigmoid_values=history["sigmoid"],
-        save_path=output_dir / f"{prefix}weight_schedule_history.png",
-        show=show_plots,
-    )
+    return history
 
 
 # ============================================================
@@ -142,29 +131,21 @@ def train_custom(
         exist_ok=True,
     )
 
-    plot_fitness_history(
-        engine.history_best,
-        engine.history_mean,
-        save_path=(
-            output_dir
-            / "fitness_history.png"
-        ),
-        show=show_plots,
-    )
-
-    plot_species_history(
-        engine.history_species,
-        save_path=(
-            output_dir
-            / "species_history.png"
-        ),
-        show=show_plots,
-    )
-
-    _save_weight_schedule_diagnostics(
+    schedule_history = _save_weight_schedule_csv(
         evaluator=evaluator,
         output_dir=output_dir,
-        show_plots=show_plots,
+    )
+
+    plot_training_summary(
+        best=engine.history_best,
+        mean=engine.history_mean,
+        species_counts=engine.history_species,
+        schedule_generations=schedule_history.get("generation"),
+        stability_weights=schedule_history.get("stability_weight"),
+        amplification_weights=schedule_history.get("amplification_weight"),
+        sigmoid_values=schedule_history.get("sigmoid"),
+        save_path=output_dir / "training_summary.png",
+        show=show_plots,
     )
 
     print(
@@ -242,27 +223,27 @@ def train_neat_python(
         exist_ok=True,
     )
 
-    if stats.generation_statistics:
+    best_history = [
+        s.best_genome().fitness
+        for s in stats.generation_statistics
+    ] if stats.generation_statistics else []
 
-        best_history = [
-            s.best_genome().fitness
-            for s in stats.generation_statistics
-        ]
-
-        plot_fitness_history(
-            best_history,
-            save_path=(
-                output_dir
-                / "fitness_history_neatpy.png"
-            ),
-            show=show_plots,
-        )
-
-    _save_weight_schedule_diagnostics(
+    schedule_history = _save_weight_schedule_csv(
         evaluator=evaluator,
         output_dir=output_dir,
-        show_plots=show_plots,
         filename_prefix="neatpy",
+    )
+
+    plot_training_summary(
+        best=best_history,
+        mean=None,
+        species_counts=None,
+        schedule_generations=schedule_history.get("generation"),
+        stability_weights=schedule_history.get("stability_weight"),
+        amplification_weights=schedule_history.get("amplification_weight"),
+        sigmoid_values=schedule_history.get("sigmoid"),
+        save_path=output_dir / "training_summary_neatpy.png",
+        show=show_plots,
     )
 
     print(
