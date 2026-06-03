@@ -203,6 +203,14 @@ class PendulumEnv:
         # Actual motor torque after lag dynamics.
         self.actual_torque = 0.0
 
+    def reset(self) -> None:
+        """Reset episode-level dynamic states in realism modules."""
+        self.actual_torque = 0.0
+        self.actuator.apply_torque(0.0)
+        self.sensor.reset()
+        self.disturbance.reset()
+        self.pid.integral = 0.0
+
     def _print_mass_property_debug(self) -> None:
 
         p = self.mass_properties
@@ -235,7 +243,6 @@ class PendulumEnv:
         theta: float,
         omega: float,
         wheel_omega: float,
-        torque_cmd: float,
         base_acceleration: float,
         resonance: float,
         dt: float,
@@ -244,6 +251,7 @@ class PendulumEnv:
         cfg = self.config
 
         # Motor lag dynamics
+        torque_cmd = self.actuator.read_torque()
         self.actual_torque += (
             dt / cfg.motor_time_constant
         ) * (
@@ -338,6 +346,7 @@ class PendulumEnv:
             )
 
         cfg = self.config
+        self.reset()
 
         steps = int(cfg.duration / cfg.dt)
 
@@ -401,6 +410,8 @@ class PendulumEnv:
                 cfg.max_wheel_torque,
             )
 
+            self.actuator.apply_torque(float(torque))
+
             resonance = self._resonance_disturbance(
                 t,
                 torque,
@@ -410,7 +421,6 @@ class PendulumEnv:
                 theta,
                 omega,
                 wheel_omega,
-                torque,
                 base_a,
                 resonance,
                 cfg.dt,

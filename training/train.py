@@ -271,165 +271,16 @@ def _evaluate_neat_python_genome(
 
     import neat
 
-    from control.hybrid_controller import (
-        HybridController,
-    )
-
-    from control.pid_interface import (
-        PlaceholderPIDController,
-    )
-
-    from neat.fitness import (
-        evaluate_rollout,
-    )
-
-    from simulation.disturbance import (
-        DisturbanceGenerator,
-    )
-
-    from simulation.pendulum_env import (
-        SimulationResult,
-    )
-
-    from simulation.sensors import (
-        SimulatedSensor,
-    )
+    from neat.fitness import evaluate_rollout
 
     net = neat.nn.FeedForwardNetwork.create(
         genome,
         neat_config,
     )
 
-    env = evaluator.env
-
     cfg = evaluator.config.simulation
-
-    steps = int(cfg.duration / cfg.dt)
-
-    theta = cfg.initial_angle
-    omega = cfg.initial_omega
-    wheel_omega = 0.0
-
-    sensor = SimulatedSensor(
-        angle_noise_std=cfg.angle_noise_std,
-        gyro_noise_std=cfg.gyro_noise_std,
-        gyro_bias_drift_rate=cfg.gyro_bias_drift_rate,
-    )
-
-    pid = PlaceholderPIDController()
-
-    hybrid = HybridController(
-        pid=pid,
-        alpha=cfg.alpha,
-        nn_torque_scale=cfg.nn_torque_scale,
-    )
-
-    disturbance = DisturbanceGenerator(
-        dt=cfg.dt,
-        broadband_gain=cfg.broadband_noise_gain,
-        vibration_freqs=cfg.vibration_freqs_hz,
-        vibration_amps=cfg.vibration_amps,
-        impulse_probability=cfg.impulse_probability,
-        impulse_magnitude=cfg.impulse_magnitude,
-    )
-
-    t_arr = np.linspace(
-        0,
-        cfg.duration,
-        steps,
-        endpoint=False,
-    )
-
-    angles = np.zeros(steps)
-    omegas = np.zeros(steps)
-    accels = np.zeros(steps)
-    wheels = np.zeros(steps)
-
-    nn_out = np.zeros(steps)
-    pid_out = np.zeros(steps)
-
-    cmd_torque = np.zeros(steps)
-    actual_torque = np.zeros(steps)
-
-    resonance_log = np.zeros(steps)
-
-    seismic = np.zeros(steps)
-
-    for i, t in enumerate(t_arr):
-
-        base_a = disturbance.sample(t)
-
-        seismic[i] = base_a
-
-        sensor.update_raw(
-            theta,
-            omega,
-            base_a,
-            wheel_omega,
-        )
-
-        reading = sensor.read()
-
-        inp = reading.as_array()
-
-        u_nn = float(
-            net.activate(inp)[0]
-        )
-
-        u_pid = pid.compute(reading)
-
-        torque = hybrid.compute_total_torque(
-            u_pid,
-            u_nn,
-        )
-
-        torque = np.clip(
-            torque,
-            -cfg.max_wheel_torque,
-            cfg.max_wheel_torque,
-        )
-
-        resonance = env._resonance_disturbance(
-            t,
-            torque,
-        )
-
-        theta, omega, wheel_omega = env._integrate_step(
-            theta,
-            omega,
-            wheel_omega,
-            torque,
-            base_a,
-            resonance,
-            cfg.dt,
-        )
-
-        nn_out[i] = u_nn
-        pid_out[i] = u_pid
-
-        cmd_torque[i] = torque
-        actual_torque[i] = env.actual_torque
-
-        resonance_log[i] = resonance
-
-        angles[i] = theta
-        omegas[i] = omega
-        accels[i] = base_a
-        wheels[i] = wheel_omega
-
-    result = SimulationResult(
-        time=t_arr,
-        angle=angles,
-        angular_velocity=omegas,
-        base_acceleration=accels,
-        wheel_velocity=wheels,
-        nn_output=nn_out,
-        pid_output=pid_out,
-        commanded_torque=cmd_torque,
-        actual_torque=actual_torque,
-        resonance_signal=resonance_log,
-        seismic_input=seismic,
-    )
+    env = evaluator.env
+    result = env.run_episode(network=net)
 
     weights = evaluator.get_generation_weights()
 
@@ -495,4 +346,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

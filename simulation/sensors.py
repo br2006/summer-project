@@ -74,6 +74,16 @@ class SimulatedSensor(SensorInterface):
             wheel_omega=0.0,
         )
 
+    def reset(self) -> None:
+        """Reset sensor internal state between episodes."""
+        self.gyro_bias = 0.0
+        self._state = dict(
+            angle=0.0,
+            omega=0.0,
+            accel=0.0,
+            wheel_omega=0.0,
+        )
+
     def update_raw(
         self,
         angle: float,

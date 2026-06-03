@@ -69,6 +69,12 @@ class DisturbanceGenerator:
         self._next_footstep_time = self._draw_next_footstep_time(0.0)
         self._footstep_times: list[float] = []
 
+    def reset(self) -> None:
+        """Reset internal stochastic state at the start of an episode."""
+        self.lowpass_state = 0.0
+        self._footstep_times = []
+        self._next_footstep_time = self._draw_next_footstep_time(0.0)
+
     def _draw_next_footstep_time(self, current_time: float) -> float:
         """Draw the next footstep time with small cadence jitter."""
         nominal_period = 1.0 / max(self.footstep_rate_hz, 1e-6)
