@@ -68,6 +68,10 @@ class PendulumEnvConfig:
     wheel_mass: float = 0.18
     wheel_radius: float = 0.045
     wheel_thickness: float = 0.012
+    wheel_rim_width: float = 0.010
+    wheel_hub_radius: float = 0.020
+    wheel_spoke_count: int = 2
+    wheel_spoke_coverage: float = 0.50
 
     # Damping/friction
     pendulum_damping: float = 0.08
@@ -148,6 +152,10 @@ class PendulumEnv:
             wheel_mass=self.config.wheel_mass,
             wheel_radius=self.config.wheel_radius,
             wheel_thickness=self.config.wheel_thickness,
+            wheel_rim_width=self.config.wheel_rim_width,
+            wheel_hub_radius=self.config.wheel_hub_radius,
+            wheel_spoke_count=self.config.wheel_spoke_count,
+            wheel_spoke_coverage=self.config.wheel_spoke_coverage,
             gravity=self.config.gravity,
         )
 
@@ -156,6 +164,9 @@ class PendulumEnv:
         self.r_cm = self.mass_properties["center_of_mass"]
         self.total_inertia = self.mass_properties["total_inertia_about_pivot"]
         self.wheel_inertia = self.mass_properties["wheel_inertia_cm"]
+        # Body inertia excluding the rotor spin inertia term.
+        # Used with a relative wheel-speed state for consistent coupled dynamics.
+        self.body_inertia = max(1e-9, self.total_inertia - self.wheel_inertia)
 
         self._print_mass_property_debug()
 
@@ -296,22 +307,28 @@ class PendulumEnv:
         # rotate the pendulum in the negative theta direction near upright.
         tau_base = -self.total_mass * self.r_cm * base_acceleration * np.cos(theta)
 
-        # Total torque
-        tau_total = (
+        # External/body torques (excluding internal motor exchange with the wheel).
+        tau_external = (
             tau_gravity
             + tau_damping
             + tau_base
             + resonance
-            + self.actual_torque
         )
 
-        # Pendulum angular acceleration
-        theta_dd = tau_total / self.total_inertia
+        # Coupled reaction-wheel dynamics using wheel_omega as RELATIVE wheel speed.
+        # Motor torque is internal: -tau on body, +tau on wheel.
+        # Wheel damping acts on relative speed and reacts on body with opposite sign.
+        tau_internal_on_body = -self.actual_torque + cfg.wheel_damping * wheel_omega
 
-        # Wheel dynamics
+        # Pendulum (body) angular acceleration.
+        theta_dd = (tau_external + tau_internal_on_body) / self.body_inertia
+
+        # Relative wheel-speed acceleration phi_dd from:
+        # Iw * (theta_dd + phi_dd) = tau_motor - b_w * phi_dot
         wheel_dd = (
-            self.actual_torque / self.wheel_inertia
-            - cfg.wheel_damping * wheel_omega
+            (self.actual_torque - cfg.wheel_damping * wheel_omega)
+            / max(1e-9, self.wheel_inertia)
+            - theta_dd
         )
 
         # Euler integration

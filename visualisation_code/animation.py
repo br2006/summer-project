@@ -10,7 +10,6 @@ import numpy as np
 
 try:
     import pygame
-    import pygame.gfxdraw
 except ImportError:  # pragma: no cover - runtime dependency guard
     pygame = None  # type: ignore[assignment]
 
@@ -21,24 +20,135 @@ from simulation.pendulum_env import PendulumEnv
 from .output import get_output_dir
 from .plots import plot_rollout
 
-DEFAULT_FRAME_STRIDE = 2
-WINDOW_SIZE = (1000, 760)
-BASE_CANVAS_SIZE = (2000, 1520)
-BACKGROUND = (245, 247, 250)
-ARM_COLOR = (44, 95, 145)
-PIVOT_COLOR = (45, 45, 45)
-MOTOR_COLOR = (226, 124, 44)
-WHEEL_RIM_COLOR = (35, 35, 35)
-WHEEL_HUB_COLOR = (85, 85, 85)
-SPOKE_COLOR = (70, 70, 70)
-HUD_BG = (255, 255, 255, 220)
-HUD_TEXT = (20, 20, 20)
+DEFAULT_FRAME_STRIDE = 5  # display every N simulation ticks
+DEFAULT_WINDOW_SIZE = (800, 600)
+SUPERSAMPLE_SCALE = 3
+
+# Warm light palette
+BG = (250, 247, 242)
+PANEL_BG = (255, 252, 247)
+PANEL_BORDER = (232, 220, 205)
+ROD_COL = (28, 18, 12)
+PIVOT_COL = (22, 14, 8)
+BOB_RIM = (35, 22, 14)
+SPOKE_COL = (40, 26, 16)
+HUB_COL = (30, 18, 10)
+MOTOR_COL = (55, 42, 34)
+MOTOR_RING = (90, 72, 58)
+TIP_COL = (220, 155, 60)
+TARGET_COL = (180, 210, 160)
+LABEL_COL = (160, 130, 105)
+VALUE_COL = (70, 55, 45)
+HINT_COL = (195, 180, 165)
+MODE_BAL = (80, 170, 110)
+MODE_BAL_BG = (235, 248, 238)
+MODE_SWG = (210, 120, 55)
+MODE_SWG_BG = (253, 242, 228)
+DIVIDER = (225, 212, 198)
 
 
 def load_controller(path: Path) -> FeedforwardNetwork:
     with path.open("rb") as f:
         genome = pickle.load(f)
     return FeedforwardNetwork(genome)
+
+
+def _wrap_angle(angle: float) -> float:
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _rounded_rect(
+    surface: pygame.Surface,
+    color: tuple[int, int, int],
+    rect: tuple[int, int, int, int],
+    radius: int,
+    border_color: Optional[tuple[int, int, int]] = None,
+    border_width: int = 1,
+) -> None:
+    pygame.draw.rect(surface, color, rect, border_radius=radius)
+    if border_color is not None:
+        pygame.draw.rect(
+            surface,
+            border_color,
+            rect,
+            width=border_width,
+            border_radius=radius,
+        )
+
+
+def _draw_dashed_line(
+    surface: pygame.Surface,
+    color: tuple[int, int, int],
+    p1: tuple[int, int],
+    p2: tuple[int, int],
+    dash: int,
+    gap: int,
+    width: int,
+) -> None:
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = float(np.hypot(dx, dy))
+    if length <= 1e-9:
+        return
+    ux, uy = dx / length, dy / length
+    pos = 0.0
+    on = True
+    while pos < length:
+        seg = min(pos + (dash if on else gap), length)
+        if on:
+            a = (int(p1[0] + ux * pos), int(p1[1] + uy * pos))
+            b = (int(p1[0] + ux * seg), int(p1[1] + uy * seg))
+            pygame.draw.line(surface, color, a, b, width)
+        pos += dash if on else gap
+        on = not on
+
+
+def _draw_flywheel(
+    canvas: pygame.Surface,
+    cx: int,
+    cy: int,
+    phi: float,
+    wheel_radius_px: int,
+) -> None:
+    outer_r = max(8, wheel_radius_px)
+    inner_r = max(3, outer_r - max(4, int(round(outer_r * 0.13))))
+    steps = 48
+
+    diam = outer_r * 2 + 4
+    wsurf = pygame.Surface((diam, diam), pygame.SRCALPHA)
+    wsurf.fill((0, 0, 0, 0))
+    ox, oy = diam // 2, diam // 2
+
+    # Annular ring
+    pygame.draw.circle(wsurf, (*SPOKE_COL, 255), (ox, oy), outer_r)
+    pygame.draw.circle(wsurf, (0, 0, 0, 0), (ox, oy), inner_r)
+
+    # Outer rim
+    pygame.draw.circle(wsurf, (*BOB_RIM, 255), (ox, oy), outer_r, max(1, outer_r // 18))
+
+    # Two thick spoke sectors, 90° each
+    spoke_half_angle = np.pi / 4.0
+    for offset in (0.0, np.pi):
+        points = [(ox, oy)]
+        for step in range(steps + 1):
+            a = phi + offset - spoke_half_angle + step * (2.0 * spoke_half_angle / steps)
+            points.append((int(ox + outer_r * np.cos(a)), int(oy + outer_r * np.sin(a))))
+        pygame.draw.polygon(wsurf, (*BOB_RIM, 255), points)
+
+    # Hub stack
+    pygame.draw.circle(wsurf, (*PANEL_BG, 255), (ox, oy), max(3, outer_r // 8))
+    pygame.draw.circle(wsurf, (*HUB_COL, 255), (ox, oy), max(2, outer_r // 12))
+    pygame.draw.circle(wsurf, (*PANEL_BG, 255), (ox, oy), max(1, outer_r // 24))
+
+    canvas.blit(wsurf, (cx - ox, cy - oy))
+
+    # Tip marker
+    tip_r = max(2, outer_r // 18)
+    tip = (
+        int(cx + (outer_r - max(2, outer_r // 14)) * np.cos(phi)),
+        int(cy + (outer_r - max(2, outer_r // 14)) * np.sin(phi)),
+    )
+    pygame.draw.circle(canvas, PANEL_BG, tip, tip_r + 2)
+    pygame.draw.circle(canvas, TIP_COL, tip, tip_r)
 
 
 def run_demo(
@@ -65,7 +175,7 @@ def run_demo(
     torque_actual = result.actual_torque
     dt = float(getattr(env.config, "dt", 0.01))
 
-    stride = max(1, frame_stride)
+    stride = max(1, int(frame_stride))
     frame_indices = list(range(0, len(theta), stride))
     if not frame_indices:
         frame_indices = [0]
@@ -73,90 +183,152 @@ def run_demo(
         frame_indices.append(len(theta) - 1)
 
     arm_length = float(getattr(env.config, "arm_length", 1.0))
-    motor_radius = float(getattr(env.config, "motor_radius", 0.02))
     wheel_radius = float(getattr(env.config, "wheel_radius", 0.03))
-    scale = 0.78 * (BASE_CANVAS_SIZE[1] / max(arm_length + wheel_radius, 1e-6))
+    motor_radius = float(getattr(env.config, "motor_radius", 0.015))
+    total_inertia = float(getattr(env, "total_inertia", 1.0))
+    total_mass = float(getattr(env, "total_mass", 1.0))
+    r_cm = float(getattr(env, "r_cm", arm_length))
+    gravity = float(getattr(env.config, "gravity", 9.81))
 
-    def world_to_screen(x_m: float, y_m: float) -> tuple[int, int]:
-        cx = BASE_CANVAS_SIZE[0] // 2
-        cy = int(BASE_CANVAS_SIZE[1] * 0.26)
-        x_px = int(round(cx + x_m * scale))
-        y_px = int(round(cy - y_m * scale))
-        return x_px, y_px
-
-    def radius_to_px(radius_m: float) -> int:
-        return max(2, int(round(radius_m * scale)))
-
-    def draw_wheel_design(
-        surf: pygame.Surface,
-        center: tuple[int, int],
-        radius_px: int,
-        spin_angle: float,
-    ) -> None:
-        rim_thickness = max(4, radius_px // 5)
-        hub_radius = max(4, radius_px // 5)
-        spoke_count = 6
-
-        pygame.gfxdraw.filled_circle(surf, center[0], center[1], radius_px, (235, 238, 243))
-        pygame.gfxdraw.aacircle(surf, center[0], center[1], radius_px, WHEEL_RIM_COLOR)
-        for t in range(rim_thickness):
-            pygame.gfxdraw.aacircle(surf, center[0], center[1], max(1, radius_px - t), WHEEL_RIM_COLOR)
-
-        for k in range(spoke_count):
-            angle = spin_angle + (2.0 * np.pi * k / spoke_count)
-            x2 = int(round(center[0] + (radius_px - rim_thickness - 2) * np.cos(angle)))
-            y2 = int(round(center[1] + (radius_px - rim_thickness - 2) * np.sin(angle)))
-            pygame.draw.line(surf, SPOKE_COLOR, center, (x2, y2), max(2, radius_px // 14))
-
-        pygame.gfxdraw.filled_circle(surf, center[0], center[1], hub_radius, WHEEL_HUB_COLOR)
-        pygame.gfxdraw.aacircle(surf, center[0], center[1], hub_radius, WHEEL_RIM_COLOR)
+    # Display wheel angle integrated from backend wheel velocity for faithful spin progression.
+    wheel_phi = np.cumsum(wheel_omega * dt)
 
     def render_frame(
         surf: pygame.Surface,
-        font: pygame.font.Font,
+        font_ui: pygame.font.Font,
+        font_bold: pygame.font.Font,
+        font_hint: pygame.font.Font,
         frame_idx: int,
+        render_w: int,
+        render_h: int,
     ) -> None:
-        surf.fill(BACKGROUND)
+        def s(n: float) -> int:
+            return int(round(n * SUPERSAMPLE_SCALE))
 
-        pivot_px = world_to_screen(0.0, 0.0)
+        surf.fill(BG)
+
+        pivot = (int(round(0.575 * render_w)), int(round(0.567 * render_h)))
+        px, py = pivot
+
+        # Physically consistent scaling: map actual mechanical size to viewport.
+        physical_extent = max(1e-6, arm_length + max(wheel_radius, motor_radius))
+        visual_extent_px = 0.32 * min(render_w, render_h)
+        meters_to_px = visual_extent_px / physical_extent
+        arm_len_px = int(round(arm_length * meters_to_px))
+
         th = float(theta[frame_idx])
-        x_m = arm_length * np.sin(th)
-        y_m = -arm_length * np.cos(th)
-        bob_px = world_to_screen(x_m, y_m)
+        bob_x = int(round(px + (arm_length * np.sin(th)) * meters_to_px))
+        bob_y = int(round(py - (arm_length * np.cos(th)) * meters_to_px))
 
-        pygame.draw.line(
+        target_len = int(round(1.136 * arm_len_px))
+        _draw_dashed_line(
             surf,
-            ARM_COLOR,
-            pivot_px,
-            bob_px,
-            width=max(5, radius_to_px(0.008)),
+            TARGET_COL,
+            (px, py),
+            (px, py - target_len),
+            dash=s(7),
+            gap=s(5),
+            width=max(1, s(1)),
         )
 
-        pivot_r = radius_to_px(0.011)
-        pygame.gfxdraw.filled_circle(surf, pivot_px[0], pivot_px[1], pivot_r, PIVOT_COLOR)
-        pygame.gfxdraw.aacircle(surf, pivot_px[0], pivot_px[1], pivot_r, (0, 0, 0))
+        pygame.draw.line(surf, ROD_COL, pivot, (bob_x, bob_y), s(8))
 
-        motor_r = radius_to_px(motor_radius)
-        pygame.gfxdraw.filled_circle(surf, bob_px[0], bob_px[1], motor_r, MOTOR_COLOR)
-        pygame.gfxdraw.aacircle(surf, bob_px[0], bob_px[1], motor_r, (10, 10, 10))
+        pygame.draw.circle(surf, PANEL_BG, pivot, s(13))
+        pygame.draw.circle(surf, PIVOT_COL, pivot, s(10))
+        pygame.draw.circle(surf, PANEL_BG, pivot, s(3))
 
-        wheel_r = radius_to_px(wheel_radius)
-        draw_wheel_design(surf, bob_px, wheel_r, spin_angle=float(wheel_omega[frame_idx]) * float(time[frame_idx]))
+        # Draw motor housing at the arm tip (same axis as wheel in dynamics model).
+        motor_r_px = max(s(6), int(round(motor_radius * meters_to_px)))
+        pygame.draw.circle(surf, MOTOR_RING, (bob_x, bob_y), motor_r_px + s(2))
+        pygame.draw.circle(surf, MOTOR_COL, (bob_x, bob_y), motor_r_px)
+        pygame.draw.circle(surf, PANEL_BG, (bob_x, bob_y), max(s(2), motor_r_px // 3))
 
-        hud = pygame.Surface((520, 180), pygame.SRCALPHA)
-        pygame.draw.rect(hud, HUD_BG, hud.get_rect(), border_radius=18)
-        lines = [
-            f"t = {time[frame_idx]:6.2f} s",
-            f"theta = {np.degrees(theta[frame_idx]):7.2f} deg   omega = {omega[frame_idx]:7.3f} rad/s",
-            f"wheel = {wheel_omega[frame_idx]:7.2f} rad/s",
-            f"torque cmd = {torque_cmd[frame_idx]:7.3f} N m   actual = {torque_actual[frame_idx]:7.3f} N m",
+        wheel_r_px = max(s(10), int(round(wheel_radius * meters_to_px)))
+        _draw_flywheel(
+            surf,
+            bob_x,
+            bob_y,
+            phi=float(wheel_phi[frame_idx]),
+            wheel_radius_px=wheel_r_px,
+        )
+
+        # Mode badge: backend-safe visual heuristic (no controller physics changes).
+        angle_from_upright = abs(_wrap_angle(float(theta[frame_idx])))
+        speed = abs(float(omega[frame_idx]))
+        balance_like = angle_from_upright < np.radians(25.0) and speed < 4.0
+        if balance_like:
+            m_col, m_bg, m_txt = MODE_BAL, MODE_BAL_BG, "Balance · Hybrid"
+        else:
+            m_col, m_bg, m_txt = MODE_SWG, MODE_SWG_BG, "Swing-up · Hybrid"
+
+        badge_surf = font_bold.render(m_txt, True, m_col)
+        badge_w = badge_surf.get_width() + s(24)
+        badge_h = badge_surf.get_height() + s(10)
+        _rounded_rect(
+            surf,
+            m_bg,
+            (s(12), s(12), badge_w, badge_h),
+            s(6),
+            border_color=m_col,
+            border_width=max(1, s(1)),
+        )
+        surf.blit(badge_surf, (s(24), s(17)))
+
+        # Telemetry card + physically-consistent energy rows from PendulumEnv mass properties.
+        theta_i = float(theta[frame_idx])
+        omega_i = float(omega[frame_idx])
+        wheel_i = float(wheel_omega[frame_idx])
+        cmd_i = float(torque_cmd[frame_idx])
+        act_i = float(torque_actual[frame_idx])
+
+        kinetic_e = 0.5 * total_inertia * omega_i**2
+        potential_e = -total_mass * gravity * r_cm * np.cos(theta_i)
+        target_e = -total_mass * gravity * r_cm
+
+        rows = [
+            ("θ", f"{theta_i:+.4f} rad {np.degrees(theta_i):+.1f}°"),
+            ("dθ/dt", f"{omega_i:+.4f} rad/s"),
+            ("Torque cmd", f"{cmd_i:+.5f} N·m"),
+            ("Torque act", f"{act_i:+.5f} N·m"),
+            ("Wheel ω", f"{wheel_i:+.4f} rad/s"),
+            ("E", f"{(kinetic_e + potential_e):.5f} J"),
+            ("E*", f"{target_e:.5f} J"),
+            ("ΔE", f"{(kinetic_e + potential_e - target_e):+.5f} J"),
         ]
-        y = 14
-        for text in lines:
-            surf_text = font.render(text, True, HUD_TEXT)
-            hud.blit(surf_text, (16, y))
-            y += 40
-        surf.blit(hud, (28, BASE_CANVAS_SIZE[1] - 220))
+
+        card_x = s(12)
+        card_y = s(12) + badge_h + s(8)
+        row_h = s(26)
+        label_w = s(98)
+        val_x = card_x + label_w + s(8)
+        card_w = s(345)
+        card_h = len(rows) * row_h + s(12)
+        pad_top = s(6)
+
+        _rounded_rect(
+            surf,
+            PANEL_BG,
+            (card_x, card_y, card_w, card_h),
+            s(8),
+            border_color=PANEL_BORDER,
+            border_width=max(1, s(1)),
+        )
+
+        for i, (label, value) in enumerate(rows):
+            y = card_y + pad_top + i * row_h
+            if i > 0:
+                pygame.draw.line(
+                    surf,
+                    DIVIDER,
+                    (card_x + s(8), y - s(1)),
+                    (card_x + card_w - s(8), y - s(1)),
+                    max(1, s(1)),
+                )
+            surf.blit(font_ui.render(label, True, LABEL_COL), (card_x + s(12), y + s(5)))
+            surf.blit(font_ui.render(value, True, VALUE_COL), (val_x, y + s(5)))
+
+        hint = font_hint.render("ESC/Q Quit", True, HINT_COL)
+        surf.blit(hint, (s(12), render_h - s(22)))
 
     if not show:
         return {
@@ -173,19 +345,25 @@ def run_demo(
 
     pygame.init()
     pygame.display.set_caption("Reaction-wheel pendulum simulation")
-    screen = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
+    screen = pygame.display.set_mode(DEFAULT_WINDOW_SIZE, pygame.RESIZABLE)
     clock = pygame.time.Clock()
-    base_canvas = pygame.Surface(BASE_CANVAS_SIZE, pygame.SRCALPHA)
-    font = pygame.font.SysFont("consolas", 34)
+
+    base_w, base_h = DEFAULT_WINDOW_SIZE
+    render_w = base_w * SUPERSAMPLE_SCALE
+    render_h = base_h * SUPERSAMPLE_SCALE
+    canvas = pygame.Surface((render_w, render_h), pygame.SRCALPHA)
+
+    font_ui = pygame.font.SysFont("segoeui", int(round(14 * SUPERSAMPLE_SCALE)))
+    font_bold = pygame.font.SysFont("segoeui", int(round(14 * SUPERSAMPLE_SCALE)), bold=True)
+    font_hint = pygame.font.SysFont("segoeui", int(round(13 * SUPERSAMPLE_SCALE)))
 
     frame_pointer = 0
     running = True
-    interval_ms = max(1, int(1000.0 * dt * stride))
-    accumulator = 0.0
+    # Match reference cadence intent: frame every TPF ticks with dt simulation tick.
+    display_fps = max(1.0, 1.0 / (dt * stride))
 
     while running:
-        elapsed = clock.tick(120)
-        accumulator += elapsed
+        clock.tick(int(round(display_fps)))
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -193,14 +371,21 @@ def run_demo(
             elif event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_q):
                 running = False
 
-        while accumulator >= interval_ms and frame_pointer < len(frame_indices) - 1:
-            accumulator -= interval_ms
+        if frame_pointer < len(frame_indices) - 1:
             frame_pointer += 1
 
-        render_frame(base_canvas, font, frame_indices[frame_pointer])
+        render_frame(
+            canvas,
+            font_ui,
+            font_bold,
+            font_hint,
+            frame_indices[frame_pointer],
+            render_w,
+            render_h,
+        )
 
         window_w, window_h = screen.get_size()
-        scaled = pygame.transform.smoothscale(base_canvas, (window_w, window_h))
+        scaled = pygame.transform.smoothscale(canvas, (window_w, window_h))
         screen.blit(scaled, (0, 0))
         pygame.display.flip()
 

@@ -19,6 +19,10 @@ simulation:
   wheel_mass: 0.046
   wheel_radius: 0.0775
   wheel_thickness: 0.03
+  wheel_rim_width: 0.008
+  wheel_hub_radius: 0.018
+  wheel_spoke_count: 2
+  wheel_spoke_coverage: 0.5
   pendulum_damping: 0.08
   wheel_damping: 0.03
   max_wheel_speed: 300.0

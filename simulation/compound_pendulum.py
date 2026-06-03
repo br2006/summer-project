@@ -33,59 +33,74 @@ class CompoundPendulumProperties:
     wheel_radius: float
     wheel_thickness: float
 
-    gravity: float = 9.81
+    # Wheel geometry model (matching printed design):
+    # - outer annular rim
+    # - central hub disk
+    # - N annular-sector spokes between hub and rim
+    wheel_rim_width: float = 0.010
+    wheel_hub_radius: float = 0.020
+    wheel_spoke_count: int = 2
+    wheel_spoke_coverage: float = 0.50
 
-    # Design-aware wheel architecture defaults (rim + spokes + hub).
-    rim_mass_fraction: float = 0.72
-    spoke_mass_fraction: float = 0.18
-    hub_mass_fraction: float = 0.10
+    gravity: float = 9.81
 
     def _wheel_inertia_from_design(self) -> float:
         """
-        Compute wheel MOI around wheel spin axis using a rim/spokes/hub model.
+        Compute wheel MOI about the wheel COM spin axis from explicit wheel geometry.
 
-        This intentionally preserves configured total wheel mass/radius/thickness,
-        while replacing the old solid-disk assumption.
+        The model assumes a uniform-density printed wheel made of:
+        1) outer rim annulus [r_rim_inner, r_outer]
+        2) hub disk [0, r_hub]
+        3) identical annular-sector spokes on [r_hub, r_rim_inner]
         """
         m = max(0.0, self.wheel_mass)
-        r_outer = max(0.0, self.wheel_radius)
+        r_outer = max(1e-9, self.wheel_radius)
         t = max(0.0, self.wheel_thickness)
+        rim_width = max(0.0, self.wheel_rim_width)
+        r_hub = max(0.0, self.wheel_hub_radius)
+        n_spokes = max(1, int(self.wheel_spoke_count))
+        coverage = min(1.0, max(0.0, float(self.wheel_spoke_coverage)))
 
-        if m <= 0.0 or r_outer <= 0.0:
+        if m <= 0.0 or t <= 0.0:
             return 0.0
 
-        # Geometry heuristics from available dimensions.
-        rim_band = min(0.22 * r_outer, max(0.08 * r_outer, 0.35 * t))
-        r_inner_rim = max(0.0, r_outer - rim_band)
+        r_rim_inner = max(0.0, r_outer - rim_width)
+        if r_hub >= r_rim_inner:
+            # Defensive fallback for invalid geometry.
+            r_hub = 0.6 * r_rim_inner
 
-        r_hub = min(0.28 * r_outer, max(0.08 * r_outer, 0.45 * t))
-        if r_hub >= r_inner_rim:
-            r_hub = 0.5 * r_inner_rim
+        # Areas in wheel plane.
+        area_rim = pi * max(0.0, r_outer**2 - r_rim_inner**2)
+        area_hub = pi * max(0.0, r_hub**2)
+        area_spoke_region = pi * max(0.0, r_rim_inner**2 - r_hub**2)
+        area_spokes_total = coverage * area_spoke_region
 
-        # Mass split (normalized defensively).
-        frac_sum = self.rim_mass_fraction + self.spoke_mass_fraction + self.hub_mass_fraction
-        if frac_sum <= 0.0:
-            rim_frac, spoke_frac, hub_frac = 0.72, 0.18, 0.10
-        else:
-            rim_frac = self.rim_mass_fraction / frac_sum
-            spoke_frac = self.spoke_mass_fraction / frac_sum
-            hub_frac = self.hub_mass_fraction / frac_sum
+        # Convert to volume and infer a single density from total wheel mass.
+        vol_rim = area_rim * t
+        vol_hub = area_hub * t
+        vol_spokes = area_spokes_total * t
+        total_vol = vol_rim + vol_hub + vol_spokes
+        if total_vol <= 1e-12:
+            return 0.0
 
-        m_rim = m * rim_frac
-        m_spokes = m * spoke_frac
-        m_hub = m * hub_frac
+        density = m / total_vol
+        m_rim = density * vol_rim
+        m_hub = density * vol_hub
+        m_spokes_total = density * vol_spokes
 
         # Rim as annular disk.
-        i_rim = 0.5 * m_rim * (r_outer**2 + r_inner_rim**2)
+        i_rim = 0.5 * m_rim * (r_outer**2 + r_rim_inner**2)
 
         # Hub as solid disk.
         i_hub = 0.5 * m_hub * (r_hub**2)
 
-        # Spokes as radial slender rods distributed between hub and rim inner edge.
-        # For one rod spanning [r1, r2]: I = m*(r1^2 + r1*r2 + r2^2)/3.
-        r1 = r_hub
-        r2 = max(r_hub, r_inner_rim)
-        i_spokes = m_spokes * (r1**2 + r1 * r2 + r2**2) / 3.0
+        # Spokes as annular sectors; each spoke gets equal mass.
+        # For any annular sector with uniform density around center:
+        #   I_z = (1/4) * m * (r_inner^2 + r_outer^2)
+        # independent of sector angle.
+        m_per_spoke = m_spokes_total / n_spokes
+        i_per_spoke = 0.25 * m_per_spoke * (r_hub**2 + r_rim_inner**2)
+        i_spokes = n_spokes * i_per_spoke
 
         return i_rim + i_hub + i_spokes
 
@@ -172,4 +187,8 @@ class CompoundPendulumProperties:
             "natural_frequency": natural_frequency,
             "oscillation_period": period,
             "wheel_inertia_cm": wheel.inertia_cm,
+            "wheel_model_rim_width": self.wheel_rim_width,
+            "wheel_model_hub_radius": self.wheel_hub_radius,
+            "wheel_model_spoke_count": float(self.wheel_spoke_count),
+            "wheel_model_spoke_coverage": self.wheel_spoke_coverage,
         }
