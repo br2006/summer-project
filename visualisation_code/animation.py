@@ -9,9 +9,11 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FuncAnimation
+from matplotlib.patches import Circle
 
+from config.settings import load_project_config
 from neat.network import FeedforwardNetwork
-from simulation.pendulum_env import PendulumEnv, PendulumEnvConfig
+from simulation.pendulum_env import PendulumEnv
 
 from .output import get_output_dir
 from .plots import plot_rollout
@@ -29,9 +31,11 @@ def run_demo(
     genome_path: Path = Path("best_genome.pkl"),
     frame_stride: int = DEFAULT_FRAME_STRIDE,
     show: bool = True,
+    config_path: Optional[Path] = None,
 ) -> FuncAnimation:
-    """Run the pendulum simulation and render an animation."""
-    env = PendulumEnv(PendulumEnvConfig())
+    """Run the pendulum simulation and render an animation using project config."""
+    project_config = load_project_config(config_path)
+    env = PendulumEnv(project_config.simulation)
     network = load_controller(genome_path)
     result = env.run_episode(network=network)
 
@@ -54,32 +58,57 @@ def run_demo(
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.set_title("Reaction-wheel pendulum simulation")
 
-    viz_extent = 1.2
+    arm_length = float(getattr(env.config, "arm_length", 1.0))
+    motor_radius = float(getattr(env.config, "motor_radius", 0.02))
+    wheel_radius = float(getattr(env.config, "wheel_radius", 0.03))
+    end_radius = max(motor_radius, wheel_radius)
+
+    pendulum_length = max(1e-6, arm_length)
+    viz_extent = 1.1 * (pendulum_length + end_radius)
+
     ax.set_xlim(-viz_extent, viz_extent)
     ax.set_ylim(-viz_extent, viz_extent)
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.3)
 
     (line,) = ax.plot([], [], lw=3, color="steelblue")
-    (mass,) = ax.plot([], [], "o", color="darkorange", markersize=14)
-    time_text = ax.text(-1.12, 1.02, "", fontsize=12)
 
-    pendulum_length = 1.0
+    motor_patch = Circle(
+        (0.0, 0.0),
+        radius=motor_radius,
+        facecolor="darkorange",
+        edgecolor="black",
+        linewidth=1.0,
+        alpha=0.75,
+    )
+    wheel_patch = Circle(
+        (0.0, 0.0),
+        radius=wheel_radius,
+        facecolor="none",
+        edgecolor="black",
+        linewidth=2.0,
+    )
+    ax.add_patch(motor_patch)
+    ax.add_patch(wheel_patch)
+
+    time_text = ax.text(-1.12, 1.02, "", fontsize=12)
 
     def init():
         line.set_data([], [])
-        mass.set_data([], [])
+        motor_patch.center = (0.0, 0.0)
+        wheel_patch.center = (0.0, 0.0)
         time_text.set_text("")
-        return line, mass, time_text
+        return line, motor_patch, wheel_patch, time_text
 
     def update(frame_idx: int):
         th = theta[frame_idx]
         x = pendulum_length * np.sin(th)
         y = -pendulum_length * np.cos(th)
         line.set_data([0.0, x], [0.0, y])
-        mass.set_data([x], [y])
+        motor_patch.center = (x, y)
+        wheel_patch.center = (x, y)
         time_text.set_text(f"t = {time[frame_idx]:.2f} s")
-        return line, mass, time_text
+        return line, motor_patch, wheel_patch, time_text
 
     ani = FuncAnimation(
         fig,

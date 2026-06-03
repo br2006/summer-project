@@ -83,6 +83,11 @@ class PendulumEnvConfig:
     # NN blending
     nn_torque_scale: float = 0.15
     alpha: float = 0.3
+    pid_kp: float = 1.8
+    pid_ki: float = 0.0
+    pid_kd: float = 0.45
+    pid_integral_limit: float = 2.0
+    pid_torque_scale: float = 0.4
 
     # Initial conditions
     initial_angle: float = 0.15
@@ -163,16 +168,18 @@ class PendulumEnv:
         self.actuator = SimulatedActuator()
 
         self.pid = ReactionWheelPIDController(
-          kp=1.8,
-          ki=0.0,
-          kd=0.45,
-          dt=self.config.dt,
+            kp=self.config.pid_kp,
+            ki=self.config.pid_ki,
+            kd=self.config.pid_kd,
+            dt=self.config.dt,
+            integral_limit=self.config.pid_integral_limit,
         )
 
         self.controller = HybridController(
             pid=self.pid,
             alpha=self.config.alpha,
             nn_torque_scale=self.config.nn_torque_scale,
+            pid_torque_scale=self.config.pid_torque_scale,
         )
 
         self.disturbance = DisturbanceGenerator(

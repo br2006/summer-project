@@ -68,9 +68,9 @@ class ReactionWheelPIDController(PIDInterface):
 
     def __init__(
         self,
-        kp: float = 1.8,
-        ki: float = 0.0,
-        kd: float = 0.45,
+        kp: float = 2.8,
+        ki: float = 0.7,
+        kd: float = 0.06,
         dt: float = 0.01,
         integral_limit: float = 2.0,
     ) -> None:
@@ -124,3 +124,5 @@ class ReactionWheelPIDController(PIDInterface):
         torque = np.clip(torque, -1.0, 1.0)
 
         return float(torque)
+
+

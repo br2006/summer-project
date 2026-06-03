@@ -1,55 +1,77 @@
+# Project settings: simulation, fitness weights, spectral targets, evolution
+
 simulation:
   dt: 0.01
   duration: 8.0
   alpha: 0
   nn_torque_scale: 0
-  pid_kp: 4.734153871913395
+  pid_kp: 1.8
   pid_ki: 0.0
-  pid_kd: 0.5378765589074217
+  pid_kd: 0.45
   pid_integral_limit: 2.0
   pid_torque_scale: 0.4
-  max_wheel_torque: 0.7939484399335369
+  max_wheel_torque: 0.6
   initial_angle: 0.12
   initial_omega: 0.0
+
   arm_mass: 0.0099
   arm_length: 0.115
+
   motor_mass: 0.14
   motor_radius: 0.02
   motor_length: 0.035
+
   wheel_mass: 0.046
   wheel_radius: 0.0775
   wheel_thickness: 0.03
+
   pendulum_damping: 0.08
   wheel_damping: 0.03
+
   max_wheel_speed: 300.0
+
   motor_time_constant: 0.04
+
   resonance_frequency: 11.0
   resonance_gain: 0.015
+
   angle_noise_std: 0.002
   gyro_noise_std: 0.01
   gyro_bias_drift_rate: 0.0001
+
+  # Base-mounted accelerometer disturbance model for exhibition demos.
+  # The current pendulum dimensions give a natural frequency of ~1.43 Hz,
+  # so the footstep cadence is centred near that resonance.
   disturbance_model: footstep_tabletop
   broadband_noise_gain: 0.02
+
   footstep_rate_hz: 1.43
   footstep_jitter: 0.12
   footstep_accel_mps2: 0.25
   footstep_pulse_width_s: 0.06
-  table_ring_freqs_hz:
-  - 8.0
-  - 14.0
-  table_ring_amps_mps2:
-  - 0.08
-  - 0.04
-  table_ring_decay_s: 0.3
+
+  # Damped tabletop ringing after each footstep: nuisance vibration to reject.
+  table_ring_freqs_hz: [8.0, 14.0]
+  table_ring_amps_mps2: [0.08, 0.04]
+  table_ring_decay_s: 0.30
+
   accelerometer_noise_std_mps2: 0.015
+
   impulse_probability: 0.001
   impulse_magnitude: 0.25
+
 fitness:
   stability: 1.0
   amplification: 0.8
   noise: 0.5
   effort: 0.3
   unsafe: 1.5
+
+# Smooth generation-dependent scheduling for the two main objectives.
+# sigmoid(g) = 1 / (1 + exp(-k * (g - midpoint)))
+#
+# amplification(g) = amp_min + (amp_max - amp_min) * sigmoid(g)
+# stability(g)     = stab_max - (stab_max - stab_min) * sigmoid(g)
 schedule:
   max_generations: 500
   midpoint: 250
@@ -58,14 +80,14 @@ schedule:
   stab_min: 0.8
   amp_min: 0.5
   amp_max: 3.0
+
 spectral:
-  target_band_hz:
-  - 0.9
-  - 2.2
-  noise_band_hz:
-  - 5.0
-  - 20.0
+  # Around the recalculated 1.43 Hz pendulum mode and realistic footstep cadence.
+  target_band_hz: [0.9, 2.2]
+  # Table/ringing frequencies after footsteps should not be amplified.
+  noise_band_hz: [5.0, 20.0]
+
 evolution:
   population_size: 30
-  generations: 10
+  generations: 10 
   seed: 42
