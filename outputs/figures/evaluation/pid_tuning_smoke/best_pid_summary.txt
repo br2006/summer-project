@@ -1,16 +1,17 @@
-Best PID + max_wheel_torque from random search
-trials=3, seeds_per_trial=1, pd_only=True
+Best PID (fixed max_wheel_torque) from random search
+trials=8, seeds_per_trial=1, pd_only=False
 
-kp=4.734154
-ki=0.000000
-kd=0.537877
-max_wheel_torque=0.793948
-score=0.320575
+initial_angle_deg=6.000
+kp=2.646687
+ki=0.082276
+kd=0.360297
+max_wheel_torque=0.200000
+score=0.829608
 
 Mean metrics:
-angle_rms=0.012588
-max_angle=0.118821
-omega_rms=0.075383
-torque_rms=0.009704
+angle_rms=0.048916
+max_angle=0.109604
+omega_rms=0.942407
+torque_rms=0.151086
 sat_fraction=0.000000
 fall_penalty=0.000000

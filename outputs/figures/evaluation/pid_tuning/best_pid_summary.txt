@@ -1,0 +1,16 @@
+Best PID + max_wheel_torque from random search
+trials=300, seeds_per_trial=4, pd_only=False
+
+kp=3.505675
+ki=0.022336
+kd=0.996605
+max_wheel_torque=0.623748
+score=90.380390
+
+Mean metrics:
+angle_rms=3.041598
+max_angle=3.249156
+omega_rms=21.172607
+torque_rms=0.054354
+sat_fraction=0.992500
+fall_penalty=57.278054

@@ -1,0 +1,94 @@
+simulation:
+  dt: 0.01
+  duration: 8.0
+  alpha: 0.0
+  nn_torque_scale: 0.3
+  pid_kp: 4.6438
+  pid_ki: 0.1313
+  pid_kd: 0.4789
+  pid_integral_limit: 2.0
+  pid_torque_scale: 0.0
+  enable_swingup: false
+  swingup_gain: 0.8
+  swingup_max_torque_fraction: 0.55
+  swingup_soft_zone_deg: 25.0
+  swingup_velocity_damping: 0.04
+  swingup_brake_gain: 0.10
+  switch_threshold_deg: 5.0
+  fallback_threshold_deg: 25.0
+  max_switch_velocity: 0.4
+  max_switch_wheel_speed: 35.0
+  switch_dwell_time_s: 0.05
+  swingup_escape_torque: 0.3
+  swingup_escape_torque_fraction: 0.9
+  swingup_low_speed_threshold: 0.35
+  max_wheel_torque: 0.3
+  initial_angle: 2.0943951023931953
+  initial_omega: 0.0
+  arm_mass: 0.0099
+  arm_length: 0.115
+  motor_mass: 0.14
+  motor_radius: 0.02
+  motor_length: 0.035
+  wheel_mass: 0.046
+  wheel_radius: 0.0775
+  wheel_thickness: 0.03
+  wheel_rim_width: 0.008
+  wheel_hub_radius: 0.018
+  wheel_spoke_count: 2
+  wheel_spoke_coverage: 0.5
+  pendulum_damping: 0.08
+  wheel_damping: 0.03
+  max_wheel_speed: 300.0
+  motor_time_constant: 0.04
+  resonance_frequency: 11.0
+  resonance_gain: 0.015
+  angle_noise_std: 0.002
+  gyro_noise_std: 0.01
+  gyro_bias_drift_rate: 0.0001
+  disturbance_model: footstep_tabletop
+  broadband_noise_gain: 0.02
+  footstep_rate_hz: 1.43
+  footstep_jitter: 0.12
+  footstep_accel_mps2: 0.25
+  footstep_pulse_width_s: 0.06
+  table_ring_freqs_hz:
+    - 8.0
+    - 14.0
+  table_ring_amps_mps2:
+    - 0.08
+    - 0.04
+  table_ring_decay_s: 0.3
+  accelerometer_noise_std_mps2: 0.015
+  impulse_probability: 0.001
+  impulse_magnitude: 0.25
+
+nn_only_fitness:
+  balance: 5.0
+  upright_time: 2.5
+  handover: 1.2
+  amplification: 1.4
+  effort: 0.35
+  wheel: 0.9
+  unsafe: 5.5
+
+spectral:
+  target_band_hz:
+    - 0.9
+    - 2.2
+  noise_band_hz:
+    - 5.0
+    - 20.0
+
+evolution:
+  population_size: 80
+  generations: 200
+  seed: 42
+
+early_stopping:
+  patience: 35
+
+warm_start:
+  warm_start_genome: ../best_genome_nn_only.pkl
+  warm_start_fraction: 0.15
+  warm_start_mutate: true

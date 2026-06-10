@@ -89,6 +89,19 @@ class InnovationTracker:
             self._node_split_innovations[connection_innovation] = self._counter
         return self._node_split_innovations[connection_innovation]
 
+    def register_genome(self, genome: "Genome") -> None:
+        """
+        Synchronize tracker state with an externally loaded/evolved genome.
+
+        This prevents innovation collisions when warm-starting a new run from a
+        previously trained genome.
+        """
+        max_innovation = self._counter
+        for conn in genome.connections.values():
+            max_innovation = max(max_innovation, int(conn.innovation))
+            self._connection_innovations[(conn.in_node, conn.out_node)] = int(conn.innovation)
+        self._counter = max(self._counter, max_innovation)
+
 
 @dataclass
 class Genome:
@@ -141,7 +154,7 @@ class Genome:
                 genome.connections[(i, o)] = ConnectionGene(
                     in_node=i,
                     out_node=o,
-                    weight=random.uniform(-1.0, 1.0),
+                    weight=random.uniform(-1.5, 1.5),
                     enabled=True,
                     innovation=innov,
                 )

@@ -84,6 +84,10 @@ class SimulatedSensor(SensorInterface):
             wheel_omega=0.0,
         )
 
+    @staticmethod
+    def _wrap_angle(angle: float) -> float:
+        return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
     def update_raw(
         self,
         angle: float,
@@ -107,7 +111,7 @@ class SimulatedSensor(SensorInterface):
             self.gyro_bias_drift_rate,
         )
 
-        angle_measured = (
+        angle_measured = self._wrap_angle(
             s["angle"]
             + np.random.normal(0.0, self.angle_noise_std)
         )

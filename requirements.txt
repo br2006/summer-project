@@ -4,4 +4,5 @@ scipy>=1.10.0
 matplotlib>=3.7.0
 neat-python>=0.92
 PyYAML>=6.0
-pygame>=2.5.0
+pygame>=2.5.0; python_version < "3.14"
+pygame-ce>=2.5.5; python_version >= "3.14"

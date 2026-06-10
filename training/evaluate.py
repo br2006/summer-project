@@ -76,7 +76,7 @@ def evaluate_best_after_short_train(output_dir: Path | None, show: bool) -> None
 
     figures_dir = output_dir
     if figures_dir is None:
-        figures_dir = get_output_dir("evaluation")
+        figures_dir = get_output_dir("evaluation", subdir="pid_nn")
     else:
         figures_dir.mkdir(parents=True, exist_ok=True)
 

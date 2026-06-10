@@ -134,6 +134,8 @@ def draw_network_topology(
     show: bool = True,
     input_labels: Optional[Sequence[str]] = None,
     presentation: bool = True,
+    title: Optional[str] = None,
+    subtitle: Optional[str] = None,
 ) -> None:
     """
     Draw a readable layered topology plot for an evolved NEAT genome.
@@ -243,9 +245,10 @@ def draw_network_topology(
             zorder=6,
         )
 
+    main_title = title or "Evolved NEAT Controller Topology"
+    sub_title = subtitle or f"{len(genome.nodes)} nodes, {len(enabled_connections)} enabled connections"
     ax.set_title(
-        "Evolved NEAT Controller Topology\n"
-        f"{len(genome.nodes)} nodes, {len(enabled_connections)} enabled connections",
+        f"{main_title}\n{sub_title}",
         fontsize=13,
         pad=14,
     )

@@ -1,338 +1,579 @@
 """
-Fast random-search tuner for PID gains and max wheel torque.
+PID tuning and swing-up sweep utilities for the reaction-wheel pendulum.
 
-Usage examples:
-  python training/tune_pid.py
-  python training/tune_pid.py --trials 400 --seeds 4 --no-show
-  python training/tune_pid.py --pd-only --trials 300
+This script is designed for the low-torque hardware regime (default 0.30 Nm),
+and evaluates the full swing-up -> handoff -> balance behaviour instead of only
+local near-upright regulation.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import sys
-from contextlib import redirect_stdout
-from dataclasses import asdict, dataclass
-from datetime import datetime
-from io import StringIO
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
-import shutil
-from typing import List
 
 import numpy as np
-import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config.settings import load_project_config
-from simulation.pendulum_env import PendulumEnv
+from simulation.pendulum_env import PendulumEnv, PendulumEnvConfig
 from visualisation_code.output import get_output_dir
-from visualisation_code.plots import plot_rollout
 
 
 class ZeroNetwork:
-    """Dummy network so PendulumEnv can run with NN authority disabled."""
+    """Placeholder NN used so PID+swing-up behaviour is evaluated in isolation."""
 
-    def activate(self, _inputs):
+    def activate(self, _obs) -> list[float]:
         return [0.0]
 
 
 @dataclass
-class TrialResult:
-    kp: float
-    ki: float
-    kd: float
-    max_wheel_torque: float
+class RolloutMetrics:
     score: float
-    angle_rms: float
-    max_angle: float
-    omega_rms: float
-    torque_rms: float
-    sat_fraction: float
-    fall_penalty: float
+    time_to_upright: float
+    time_in_band: float
+    first_reach_time: float
+    band_exit_count: int
+    falls_count: int
+    settle_time: float
+    longest_hold_time: float
+    upright_fraction: float
+    balance_mode_fraction: float
+    fall_rate: float
+    saturation_fraction: float
+    handoff_count: int
 
 
-def write_best_to_project_config(
-    best: TrialResult,
-    config_path: Path,
-) -> tuple[Path, Path]:
-    """
-    Write best PID/torque values back into project config YAML.
-
-    Returns:
-        (backup_path, updated_config_path)
-    """
-    config_path = config_path.resolve()
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = config_path.with_suffix(config_path.suffix + f".bak.{timestamp}")
-    shutil.copy2(config_path, backup_path)
-
-    with config_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-
-    if not isinstance(data, dict):
-        raise ValueError(f"Unexpected YAML root type in {config_path}; expected mapping.")
-
-    simulation = data.get("simulation")
-    if simulation is None:
-        simulation = {}
-        data["simulation"] = simulation
-    if not isinstance(simulation, dict):
-        raise ValueError("'simulation' section exists but is not a mapping.")
-
-    simulation["pid_kp"] = float(best.kp)
-    simulation["pid_ki"] = float(best.ki)
-    simulation["pid_kd"] = float(best.kd)
-    simulation["max_wheel_torque"] = float(best.max_wheel_torque)
-
-    with config_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
-
-    return backup_path, config_path
+def _wrap(angle: np.ndarray) -> np.ndarray:
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
 
-def rollout_metrics(result, max_wheel_speed: float) -> dict:
-    angle = np.asarray(result.angle)
-    omega = np.asarray(result.angular_velocity)
-    torque = np.asarray(result.actual_torque)
-    wheel = np.asarray(result.wheel_velocity)
+def evaluate_rollout_metrics(
+    result,
+    cfg: PendulumEnvConfig,
+    upright_band_deg: float,
+) -> RolloutMetrics:
+    """Compute swing-up + handoff + balance metrics from one rollout."""
+    t = result.time
+    dt = cfg.dt
+    duration = float(cfg.duration)
 
-    angle_rms = float(np.sqrt(np.mean(angle**2)))
-    max_angle = float(np.max(np.abs(angle)))
-    omega_rms = float(np.sqrt(np.mean(omega**2)))
-    torque_rms = float(np.sqrt(np.mean(torque**2)))
-    sat_fraction = float(np.mean(np.abs(wheel) > 0.95 * max_wheel_speed))
+    angle = np.abs(_wrap(result.angle))
+    omega = np.abs(result.angular_velocity)
+    mode = result.control_mode
+    torque = np.abs(result.commanded_torque)
 
-    # Additional hard penalty for large excursions (near-fall behaviour).
-    fall_penalty = 0.0
-    if max_angle > 0.7:
-        fall_penalty += (max_angle - 0.7) * 8.0
-    if max_angle > 1.2:
-        fall_penalty += (max_angle - 1.2) * 18.0
+    upright_band = np.radians(upright_band_deg)
+    settle_band = np.radians(min(8.0, max(4.0, cfg.switch_threshold_deg * 0.7)))
+    settle_omega = min(1.2, max(0.4, cfg.max_switch_velocity * 0.8))
 
+    upright_mask = angle < upright_band
+    settle_mask = (angle < settle_band) & (omega < settle_omega)
+    hold_mask = settle_mask
+
+    upright_idx = np.where(upright_mask)[0]
+    time_to_upright = float(t[upright_idx[0]]) if upright_idx.size else duration
+    first_reach_time = time_to_upright
+    time_in_band = float(np.sum(upright_mask) * dt)
+
+    band_exit_count = int(np.sum(upright_mask[:-1] & (~upright_mask[1:])))
+
+    fallen_thresh = np.radians(90.0)
+    fallen_mask = angle > fallen_thresh
+    falls_count = int(np.sum((~fallen_mask[:-1]) & fallen_mask[1:]))
+
+    settle_time = duration
+    if settle_mask.any():
+        for i in np.where(settle_mask)[0]:
+            if np.all(settle_mask[i:]):
+                settle_time = float(t[i])
+                break
+
+    # Longest contiguous hold duration within the settle band.
+    longest_hold_steps = 0
+    current_hold_steps = 0
+    for is_hold in hold_mask:
+        if is_hold:
+            current_hold_steps += 1
+            longest_hold_steps = max(longest_hold_steps, current_hold_steps)
+        else:
+            current_hold_steps = 0
+    longest_hold_time = float(longest_hold_steps * dt)
+
+    upright_fraction = float(np.mean(upright_mask))
+    balance_mode_fraction = float(np.mean(mode.astype(bool)))
+
+    fall_rate = float(np.mean(angle > fallen_thresh))
+
+    sat_eps = 0.98 * cfg.max_wheel_torque
+    saturation_fraction = float(np.mean(torque >= sat_eps))
+
+    handoff_count = int(np.sum(np.abs(np.diff(mode.astype(np.int8))) > 0))
+
+    # Lower is better. Weights prioritize rapid swing-up and robust settling,
+    # while penalizing falling, chatter, and excessive saturation.
     score = (
-        4.0 * angle_rms
-        + 2.0 * max_angle
-        + 0.4 * omega_rms
-        + 0.25 * torque_rms
-        + 6.0 * sat_fraction
-        + fall_penalty
+        1.0 * time_to_upright
+        + 1.25 * settle_time
+        + 3.0 * fall_rate * duration
+        + 0.75 * saturation_fraction * duration
+        + 0.4 * handoff_count * dt
     )
 
-    return {
-        "score": float(score),
-        "angle_rms": angle_rms,
-        "max_angle": max_angle,
-        "omega_rms": omega_rms,
-        "torque_rms": torque_rms,
-        "sat_fraction": sat_fraction,
-        "fall_penalty": float(fall_penalty),
-    }
+    return RolloutMetrics(
+        score=float(score),
+        time_to_upright=time_to_upright,
+        time_in_band=time_in_band,
+        first_reach_time=first_reach_time,
+        band_exit_count=band_exit_count,
+        falls_count=falls_count,
+        settle_time=settle_time,
+        longest_hold_time=longest_hold_time,
+        upright_fraction=upright_fraction,
+        balance_mode_fraction=balance_mode_fraction,
+        fall_rate=fall_rate,
+        saturation_fraction=saturation_fraction,
+        handoff_count=handoff_count,
+    )
 
 
-def evaluate_candidate(project, kp: float, ki: float, kd: float, max_wheel_torque: float, seeds: List[int]) -> TrialResult:
-    scores = []
-    metric_samples = []
-
+def evaluate_candidate(
+    cfg: PendulumEnvConfig,
+    seeds: list[int],
+    upright_band_deg: float,
+) -> RolloutMetrics:
+    all_metrics: list[RolloutMetrics] = []
     for seed in seeds:
         np.random.seed(seed)
-        sim_cfg = project.simulation
-        sim_cfg.pid_kp = kp
-        sim_cfg.pid_ki = ki
-        sim_cfg.pid_kd = kd
-        sim_cfg.max_wheel_torque = max_wheel_torque
-
-        # Force NN fully disabled for clean PID tuning.
-        sim_cfg.alpha = 0.0
-        sim_cfg.nn_torque_scale = 0.0
-
-        # Silence mass-property debug prints per trial.
-        with redirect_stdout(StringIO()):
-            env = PendulumEnv(sim_cfg)
+        env = PendulumEnv(cfg)
         result = env.run_episode(network=ZeroNetwork())
+        all_metrics.append(evaluate_rollout_metrics(result, cfg, upright_band_deg))
 
-        metrics = rollout_metrics(result, max_wheel_speed=sim_cfg.max_wheel_speed)
-        scores.append(metrics["score"])
-        metric_samples.append(metrics)
+    def _avg(field: str) -> float:
+        return float(np.mean([getattr(m, field) for m in all_metrics]))
 
-    mean_metrics = {
-        k: float(np.mean([m[k] for m in metric_samples]))
-        for k in metric_samples[0].keys()
-    }
-
-    return TrialResult(
-        kp=kp,
-        ki=ki,
-        kd=kd,
-        max_wheel_torque=max_wheel_torque,
-        score=float(np.mean(scores)),
-        angle_rms=mean_metrics["angle_rms"],
-        max_angle=mean_metrics["max_angle"],
-        omega_rms=mean_metrics["omega_rms"],
-        torque_rms=mean_metrics["torque_rms"],
-        sat_fraction=mean_metrics["sat_fraction"],
-        fall_penalty=mean_metrics["fall_penalty"],
+    return RolloutMetrics(
+        score=_avg("score"),
+        time_to_upright=_avg("time_to_upright"),
+        time_in_band=_avg("time_in_band"),
+        first_reach_time=_avg("first_reach_time"),
+        band_exit_count=int(round(_avg("band_exit_count"))),
+        falls_count=int(round(_avg("falls_count"))),
+        settle_time=_avg("settle_time"),
+        longest_hold_time=_avg("longest_hold_time"),
+        upright_fraction=_avg("upright_fraction"),
+        balance_mode_fraction=_avg("balance_mode_fraction"),
+        fall_rate=_avg("fall_rate"),
+        saturation_fraction=_avg("saturation_fraction"),
+        handoff_count=int(round(_avg("handoff_count"))),
     )
 
 
-def run_tuning(
-    trials: int,
-    seeds: int,
-    pd_only: bool,
-    show: bool,
-    output_subdir: str,
-    kp_min: float,
-    kp_max: float,
-    ki_min: float,
-    ki_max: float,
-    kd_min: float,
-    kd_max: float,
-    torque_min: float,
-    torque_max: float,
-    write_config: bool,
-    config_path: Path,
-) -> None:
-    project = load_project_config()
-    rng = np.random.default_rng(project.seed)
+def evaluate_band_objective(
+    metrics: RolloutMetrics,
+    duration: float,
+) -> float:
+    """Lower-is-better objective using explicit upright-band priorities.
 
-    seed_list = [project.seed + i for i in range(max(1, seeds))]
+    Priorities:
+      1) maximize time in band
+      2) maximize longest continuous hold in band
+      3) penalize exits and falls
+      4) secondary: faster first reach
+    """
+    time_out_of_band = max(0.0, duration - metrics.time_in_band)
+    hold_shortfall = max(0.0, duration - metrics.longest_hold_time)
+    return float(
+        4.0 * time_out_of_band
+        + 3.5 * hold_shortfall
+        + 8.0 * metrics.band_exit_count
+        + 12.0 * metrics.falls_count
+        + 0.8 * metrics.first_reach_time
+    )
 
-    out_dir = get_output_dir("evaluation", output_subdir)
-    trials_csv = out_dir / "pid_tuning_trials.csv"
 
-    all_results: List[TrialResult] = []
+def select_objective(
+    metrics: RolloutMetrics,
+    duration: float,
+    objective: str,
+) -> float:
+    if objective == "swingup":
+        return float(metrics.score)
+    if objective == "band":
+        return evaluate_band_objective(metrics, duration)
+    raise ValueError(f"Unknown objective: {objective}")
+
+
+def build_eval_config(base: PendulumEnvConfig, args: argparse.Namespace) -> PendulumEnvConfig:
+    cfg = deepcopy(base)
+    cfg.max_wheel_torque = args.max_torque
+    cfg.pid_torque_scale = min(cfg.pid_torque_scale, args.max_torque)
+    cfg.nn_torque_scale = 0.0
+    cfg.alpha = 0.0
+    cfg.enable_swingup = True
+    cfg.initial_angle = np.pi
+    cfg.initial_omega = 0.0
+    cfg.duration = args.duration
+
+    if args.no_disturbance:
+        cfg.disturbance_model = "sinusoidal"
+        cfg.broadband_noise_gain = 0.0
+        cfg.vibration_amps = [0.0 for _ in cfg.vibration_amps]
+        cfg.impulse_probability = 0.0
+        cfg.impulse_magnitude = 0.0
+        cfg.footstep_accel_mps2 = 0.0
+        cfg.table_ring_amps_mps2 = [0.0 for _ in cfg.table_ring_amps_mps2]
+        cfg.accelerometer_noise_std_mps2 = 0.0
+        cfg.angle_noise_std = 0.0
+        cfg.gyro_noise_std = 0.0
+
+    # Conservative handoff defaults for low-torque operation.
+    if hasattr(args, "switch_threshold_deg"):
+        cfg.switch_threshold_deg = min(cfg.switch_threshold_deg, args.switch_threshold_deg)
+    if hasattr(args, "max_switch_velocity"):
+        cfg.max_switch_velocity = min(cfg.max_switch_velocity, args.max_switch_velocity)
+    if hasattr(args, "max_switch_wheel_speed") and args.max_switch_wheel_speed > 0.0:
+        cfg.max_switch_wheel_speed = min(cfg.max_switch_wheel_speed, args.max_switch_wheel_speed)
+
+    return cfg
+
+
+def run_pid_random_search(args: argparse.Namespace) -> None:
+    project = load_project_config(args.config)
+    cfg = build_eval_config(project.simulation, args)
+
+    seed_list = [args.seed + i for i in range(args.eval_rollouts)]
+    rng = np.random.default_rng(args.seed)
+
     best = None
+    best_params = None
+    best_objective_score = None
 
-    for idx in range(trials):
-        kp = float(rng.uniform(kp_min, kp_max))
-        ki = 0.0 if pd_only else float(rng.uniform(ki_min, ki_max))
-        kd = float(rng.uniform(kd_min, kd_max))
-        max_torque = float(rng.uniform(torque_min, torque_max))
+    for i in range(args.trials):
+        trial_cfg = deepcopy(cfg)
+        trial_cfg.pid_kp = float(rng.uniform(args.kp_min, args.kp_max))
+        trial_cfg.pid_ki = float(rng.uniform(args.ki_min, args.ki_max))
+        trial_cfg.pid_kd = float(rng.uniform(args.kd_min, args.kd_max))
+        trial_cfg.pid_torque_scale = float(args.max_torque)
 
-        trial = evaluate_candidate(project, kp, ki, kd, max_torque, seed_list)
-        all_results.append(trial)
+        metrics = evaluate_candidate(trial_cfg, seed_list, args.upright_band_deg)
+        objective_score = select_objective(metrics, args.duration, args.objective)
+        if best is None or best_objective_score is None or objective_score < best_objective_score:
+            best = metrics
+            best_objective_score = objective_score
+            best_params = (
+                trial_cfg.pid_kp,
+                trial_cfg.pid_ki,
+                trial_cfg.pid_kd,
+                trial_cfg.pid_torque_scale,
+                objective_score,
+            )
 
-        if best is None or trial.score < best.score:
-            best = trial
+        if (i + 1) % max(1, args.trials // 10) == 0:
+            print(
+                f"trial {i+1}/{args.trials} "
+                f"best_{args.objective}_score={best_params[4]:.3f}"
+            )
 
-        if (idx + 1) % max(1, trials // 10) == 0:
-            print(f"[{idx + 1}/{trials}] current best score={best.score:.4f} | kp={best.kp:.3f}, ki={best.ki:.3f}, kd={best.kd:.3f}, max_wheel_torque={best.max_wheel_torque:.3f}")
+    assert best is not None and best_params is not None
 
-    all_results.sort(key=lambda r: r.score)
+    print(f"\n=== Best PID ({args.objective} objective) ===")
+    print(f"kp={best_params[0]:.6f} ki={best_params[1]:.6f} kd={best_params[2]:.6f}")
+    print(f"pid_torque_scale={best_params[3]:.6f}")
+    print(f"objective_score={best_params[4]:.4f}")
+    print(f"score={best.score:.4f}")
+    print(f"time_to_upright={best.time_to_upright:.3f}s")
+    print(f"settle_time={best.settle_time:.3f}s")
+    print(f"fall_rate={best.fall_rate:.4f}")
+    print(f"saturation_fraction={best.saturation_fraction:.4f}")
+    print(f"handoff_count={best.handoff_count}")
 
-    with trials_csv.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(asdict(all_results[0]).keys()))
+
+def run_pid_successive_halving(args: argparse.Namespace) -> None:
+    """Joint successive-halving over PID + handoff/swing-up parameters."""
+    project = load_project_config(args.config)
+    base_cfg = build_eval_config(project.simulation, args)
+    rng = np.random.default_rng(args.seed)
+
+    rollout_schedule = [int(v.strip()) for v in args.sh_rollout_schedule.split(",") if v.strip()]
+    duration_schedule = [float(v.strip()) for v in args.sh_duration_schedule.split(",") if v.strip()]
+    if len(rollout_schedule) != len(duration_schedule):
+        raise ValueError("--sh-rollout-schedule and --sh-duration-schedule must have same length")
+
+    candidates: list[dict[str, float]] = []
+    for _ in range(args.sh_initial_candidates):
+        candidates.append(
+            {
+                "kp": float(rng.uniform(args.kp_min, args.kp_max)),
+                "ki": float(rng.uniform(args.ki_min, args.ki_max)),
+                "kd": float(rng.uniform(args.kd_min, args.kd_max)),
+                "switch_threshold_deg": float(
+                    rng.uniform(args.switch_threshold_min_deg, args.switch_threshold_max_deg)
+                ),
+                "max_switch_velocity": float(
+                    rng.uniform(args.max_switch_velocity_min, args.max_switch_velocity_max)
+                ),
+                "fallback_threshold_deg": float(
+                    rng.uniform(args.fallback_threshold_min_deg, args.fallback_threshold_max_deg)
+                ),
+                "max_switch_wheel_speed": float(
+                    rng.uniform(args.max_switch_wheel_speed_min, args.max_switch_wheel_speed_max)
+                ),
+                "swingup_gain": float(
+                    rng.uniform(args.swingup_gain_min, args.swingup_gain_max)
+                ),
+            }
+        )
+
+    print(f"Starting successive halving with {len(candidates)} candidates")
+    for round_idx, (n_rollouts, eval_duration) in enumerate(
+        zip(rollout_schedule, duration_schedule),
+        start=1,
+    ):
+        round_rows: list[tuple[float, RolloutMetrics, dict[str, float]]] = []
+        seeds = [args.seed + i for i in range(n_rollouts)]
+
+        for params in candidates:
+            cfg = deepcopy(base_cfg)
+            cfg.duration = eval_duration
+            cfg.pid_kp = params["kp"]
+            cfg.pid_ki = params["ki"]
+            cfg.pid_kd = params["kd"]
+            cfg.pid_torque_scale = float(args.max_torque)
+            cfg.switch_threshold_deg = params["switch_threshold_deg"]
+            cfg.max_switch_velocity = params["max_switch_velocity"]
+            cfg.fallback_threshold_deg = params["fallback_threshold_deg"]
+            cfg.max_switch_wheel_speed = params["max_switch_wheel_speed"]
+            cfg.swingup_gain = params["swingup_gain"]
+
+            metrics = evaluate_candidate(cfg, seeds, args.upright_band_deg)
+            score = evaluate_band_objective(metrics, eval_duration)
+            round_rows.append((score, metrics, params))
+
+        round_rows.sort(key=lambda r: r[0])
+        keep_n = max(1, int(np.ceil(len(round_rows) * args.sh_keep_ratio)))
+        candidates = [r[2] for r in round_rows[:keep_n]]
+
+        best_score, best_metrics, best_params = round_rows[0]
+        print(
+            f"round {round_idx}/{len(rollout_schedule)} | "
+            f"dur={eval_duration:.1f}s rollouts={n_rollouts} | "
+            f"candidates={len(round_rows)} -> keep={keep_n} | "
+            f"best_band_score={best_score:.3f} "
+            f"(in_band={best_metrics.time_in_band:.2f}s hold={best_metrics.longest_hold_time:.2f}s "
+            f"exits={best_metrics.band_exit_count} falls={best_metrics.falls_count} "
+            f"first={best_metrics.first_reach_time:.2f}s)"
+        )
+
+    final_seeds = [args.seed + i for i in range(args.eval_rollouts)]
+    best_final = None
+    best_final_score = None
+    best_final_params = None
+    for params in candidates:
+        cfg = deepcopy(base_cfg)
+        cfg.duration = args.duration
+        cfg.pid_kp = params["kp"]
+        cfg.pid_ki = params["ki"]
+        cfg.pid_kd = params["kd"]
+        cfg.pid_torque_scale = float(args.max_torque)
+        cfg.switch_threshold_deg = params["switch_threshold_deg"]
+        cfg.max_switch_velocity = params["max_switch_velocity"]
+        cfg.fallback_threshold_deg = params["fallback_threshold_deg"]
+        cfg.max_switch_wheel_speed = params["max_switch_wheel_speed"]
+        cfg.swingup_gain = params["swingup_gain"]
+        metrics = evaluate_candidate(cfg, final_seeds, args.upright_band_deg)
+        score = evaluate_band_objective(metrics, args.duration)
+        if best_final is None or score < best_final_score:
+            best_final = metrics
+            best_final_score = score
+            best_final_params = params
+
+    assert best_final is not None and best_final_params is not None and best_final_score is not None
+
+    print("\n=== Best joint params (successive halving, band objective) ===")
+    print(
+        f"kp={best_final_params['kp']:.6f} "
+        f"ki={best_final_params['ki']:.6f} "
+        f"kd={best_final_params['kd']:.6f}"
+    )
+    print(f"switch_threshold_deg={best_final_params['switch_threshold_deg']:.3f}")
+    print(f"max_switch_velocity={best_final_params['max_switch_velocity']:.3f}")
+    print(f"fallback_threshold_deg={best_final_params['fallback_threshold_deg']:.3f}")
+    print(f"max_switch_wheel_speed={best_final_params['max_switch_wheel_speed']:.3f}")
+    print(f"swingup_gain={best_final_params['swingup_gain']:.3f}")
+    print(f"pid_torque_scale={float(args.max_torque):.6f}")
+    print(f"band_score={best_final_score:.4f}")
+    print(f"time_in_band={best_final.time_in_band:.3f}s")
+    print(f"first_reach_time={best_final.first_reach_time:.3f}s")
+    print(f"longest_hold_time={best_final.longest_hold_time:.3f}s")
+    print(f"band_exit_count={best_final.band_exit_count}")
+    print(f"falls_count={best_final.falls_count}")
+    print(f"upright_fraction={best_final.upright_fraction:.4f}")
+    print(f"balance_mode_fraction={best_final.balance_mode_fraction:.4f}")
+    print(f"fall_rate={best_final.fall_rate:.4f}")
+    print(f"saturation_fraction={best_final.saturation_fraction:.4f}")
+    print(f"handoff_count={best_final.handoff_count}")
+
+
+def _parse_range(spec: str) -> list[float]:
+    vals = [float(v.strip()) for v in spec.split(",") if v.strip()]
+    if not vals:
+        raise ValueError(f"Invalid range string: {spec}")
+    return vals
+
+
+def run_swingup_sweep(args: argparse.Namespace) -> None:
+    project = load_project_config(args.config)
+    base_cfg = build_eval_config(project.simulation, args)
+
+    gains = _parse_range(args.swingup_gain_grid)
+    escape_fracs = _parse_range(args.escape_fraction_grid)
+    switch_degs = _parse_range(args.switch_threshold_grid)
+    switch_vels = _parse_range(args.switch_velocity_grid)
+
+    seed_list = [args.seed + i for i in range(args.eval_rollouts)]
+    rows = []
+
+    combos = list(itertools.product(gains, escape_fracs, switch_degs, switch_vels))
+    print(f"Running sweep over {len(combos)} combinations...")
+
+    for idx, (gain, esc_frac, sw_deg, sw_vel) in enumerate(combos, start=1):
+        cfg = deepcopy(base_cfg)
+        cfg.swingup_gain = gain
+        cfg.swingup_escape_torque_fraction = esc_frac
+        cfg.swingup_escape_torque = min(cfg.max_wheel_torque, esc_frac * cfg.max_wheel_torque)
+        cfg.switch_threshold_deg = sw_deg
+        cfg.max_switch_velocity = sw_vel
+
+        metrics = evaluate_candidate(cfg, seed_list, args.upright_band_deg)
+        rows.append(
+            {
+                "score": metrics.score,
+                "time_to_upright": metrics.time_to_upright,
+                "settle_time": metrics.settle_time,
+                "fall_rate": metrics.fall_rate,
+                "saturation_fraction": metrics.saturation_fraction,
+                "handoff_count": metrics.handoff_count,
+                "swingup_gain": gain,
+                "escape_fraction": esc_frac,
+                "switch_threshold_deg": sw_deg,
+                "max_switch_velocity": sw_vel,
+            }
+        )
+
+        if idx % max(1, len(combos) // 10) == 0:
+            print(f"  progress {idx}/{len(combos)}")
+
+    rows.sort(key=lambda r: r["score"])
+
+    out_dir = args.output or get_output_dir("training", subdir="pid_swingup_sweep")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_csv = out_dir / "swingup_sweep_ranked.csv"
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
-        for row in all_results:
-            writer.writerow(asdict(row))
+        writer.writerows(rows)
 
-    assert best is not None
+    print("\n=== Top sweep candidates ===")
+    for i, r in enumerate(rows[: args.top_k], start=1):
+        print(
+            f"#{i} score={r['score']:.3f} | t_up={r['time_to_upright']:.2f}s "
+            f"settle={r['settle_time']:.2f}s fall={r['fall_rate']:.3f} "
+            f"sat={r['saturation_fraction']:.3f} | "
+            f"gain={r['swingup_gain']:.3f} esc_frac={r['escape_fraction']:.3f} "
+            f"sw_deg={r['switch_threshold_deg']:.1f} sw_vel={r['max_switch_velocity']:.2f}"
+        )
 
-    # Regenerate best rollout for plotting.
-    sim_cfg = project.simulation
-    sim_cfg.pid_kp = best.kp
-    sim_cfg.pid_ki = best.ki
-    sim_cfg.pid_kd = best.kd
-    sim_cfg.max_wheel_torque = best.max_wheel_torque
-    sim_cfg.alpha = 0.0
-    sim_cfg.nn_torque_scale = 0.0
-    np.random.seed(project.seed)
-    with redirect_stdout(StringIO()):
-        env = PendulumEnv(sim_cfg)
-    best_rollout = env.run_episode(network=ZeroNetwork())
+    print(f"\nRanked sweep written to: {out_csv}")
 
-    plot_rollout(
-        best_rollout,
-        target_band_hz=project.spectral.target_band_hz,
-        save_path=out_dir / "best_pid_rollout.png",
-        show=show,
+
+def make_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="PID tuning and swing-up parameter sweep")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "project_config.yaml")
+    parser.add_argument(
+        "--mode",
+        choices=["tune-pid", "tune-pid-sh", "sweep-swingup"],
+        default="tune-pid",
+    )
+    parser.add_argument("--output", type=Path, default=None)
+
+    # Core defaults aligned with real hardware target.
+    parser.add_argument("--max-torque", type=float, default=0.30)
+    parser.add_argument("--duration", type=float, default=8.0)
+    parser.add_argument("--eval-rollouts", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no-disturbance", action="store_true")
+
+    # Low-torque handoff tightening.
+    parser.add_argument("--switch-threshold-deg", type=float, default=14.0)
+    parser.add_argument("--max-switch-velocity", type=float, default=2.0)
+    parser.add_argument("--max-switch-wheel-speed", type=float, default=45.0)
+
+    # PID random search bounds.
+    parser.add_argument("--trials", type=int, default=120)
+    parser.add_argument("--kp-min", type=float, default=0.5)
+    parser.add_argument("--kp-max", type=float, default=8.0)
+    parser.add_argument("--ki-min", type=float, default=0.0)
+    parser.add_argument("--ki-max", type=float, default=1.0)
+    parser.add_argument("--kd-min", type=float, default=0.0)
+    parser.add_argument("--kd-max", type=float, default=2.0)
+    parser.add_argument("--upright-band-deg", type=float, default=12.0)
+    parser.add_argument(
+        "--objective",
+        choices=["swingup", "band"],
+        default="band",
+        help="Objective for tune-pid random search.",
     )
 
-    summary_path = out_dir / "best_pid_summary.txt"
-    with summary_path.open("w", encoding="utf-8") as f:
-        f.write("Best PID + max_wheel_torque from random search\n")
-        f.write(f"trials={trials}, seeds_per_trial={len(seed_list)}, pd_only={pd_only}\n\n")
-        f.write(f"kp={best.kp:.6f}\n")
-        f.write(f"ki={best.ki:.6f}\n")
-        f.write(f"kd={best.kd:.6f}\n")
-        f.write(f"max_wheel_torque={best.max_wheel_torque:.6f}\n")
-        f.write(f"score={best.score:.6f}\n\n")
-        f.write("Mean metrics:\n")
-        f.write(f"angle_rms={best.angle_rms:.6f}\n")
-        f.write(f"max_angle={best.max_angle:.6f}\n")
-        f.write(f"omega_rms={best.omega_rms:.6f}\n")
-        f.write(f"torque_rms={best.torque_rms:.6f}\n")
-        f.write(f"sat_fraction={best.sat_fraction:.6f}\n")
-        f.write(f"fall_penalty={best.fall_penalty:.6f}\n")
+    # Joint successive-halving search options.
+    parser.add_argument("--sh-initial-candidates", type=int, default=48)
+    parser.add_argument("--sh-keep-ratio", type=float, default=0.4)
+    parser.add_argument("--sh-rollout-schedule", type=str, default="1,2,4")
+    parser.add_argument("--sh-duration-schedule", type=str, default="4,6,8")
+    parser.add_argument("--switch-threshold-min-deg", type=float, default=10.0)
+    parser.add_argument("--switch-threshold-max-deg", type=float, default=18.0)
+    parser.add_argument("--max-switch-velocity-min", type=float, default=1.0)
+    parser.add_argument("--max-switch-velocity-max", type=float, default=3.0)
+    parser.add_argument("--fallback-threshold-min-deg", type=float, default=50.0)
+    parser.add_argument("--fallback-threshold-max-deg", type=float, default=95.0)
+    parser.add_argument("--max-switch-wheel-speed-min", type=float, default=30.0)
+    parser.add_argument("--max-switch-wheel-speed-max", type=float, default=70.0)
+    parser.add_argument("--swingup-gain-min", type=float, default=1.5)
+    parser.add_argument("--swingup-gain-max", type=float, default=3.2)
 
-    print("\n=== Best candidate ===")
-    print(f"kp={best.kp:.4f}, ki={best.ki:.4f}, kd={best.kd:.4f}, max_wheel_torque={best.max_wheel_torque:.4f}")
-    print(f"score={best.score:.6f}")
-    print(f"angle_rms={best.angle_rms:.6f}, max_angle={best.max_angle:.6f}, sat_fraction={best.sat_fraction:.6f}")
-    print(f"Saved trials CSV: {trials_csv}")
-    print(f"Saved best rollout plot: {out_dir / 'best_pid_rollout.png'}")
-    print(f"Saved summary: {summary_path}")
-
-    if write_config:
-        backup_path, updated_path = write_best_to_project_config(best, config_path)
-        print("\nUpdated project config with best gains:")
-        print(f"  config: {updated_path}")
-        print(f"  backup: {backup_path}")
+    # Swing-up sweep grids.
+    parser.add_argument("--swingup-gain-grid", type=str, default="1.5,2.0,2.5,3.0")
+    parser.add_argument("--escape-fraction-grid", type=str, default="0.7,0.8,0.9,1.0")
+    parser.add_argument("--switch-threshold-grid", type=str, default="10,12,14")
+    parser.add_argument("--switch-velocity-grid", type=str, default="1.2,1.6,2.0")
+    parser.add_argument("--top-k", type=int, default=8)
+    return parser
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Tune PID gains and max_wheel_torque via random search")
-    parser.add_argument("--trials", type=int, default=250, help="Number of random candidates to evaluate")
-    parser.add_argument("--seeds", type=int, default=3, help="Rollout seeds per candidate for robustness")
-    parser.add_argument("--pd-only", action="store_true", help="Force ki=0 for faster PD-only tuning")
-    parser.add_argument("--output-subdir", type=str, default="pid_tuning", help="Subdirectory under outputs/figures/evaluation")
-    parser.add_argument("--no-show", action="store_true", help="Disable matplotlib window")
-
-    parser.add_argument("--kp-min", type=float, default=0.4)
-    parser.add_argument("--kp-max", type=float, default=6.0)
-    parser.add_argument("--ki-min", type=float, default=0.0)
-    parser.add_argument("--ki-max", type=float, default=0.35)
-    parser.add_argument("--kd-min", type=float, default=0.02)
-    parser.add_argument("--kd-max", type=float, default=1.2)
-    parser.add_argument("--torque-min", type=float, default=0.15)
-    parser.add_argument("--torque-max", type=float, default=0.9)
-    parser.add_argument(
-        "--write-config",
-        action="store_true",
-        help="Write best kp/ki/kd/max_wheel_torque back into project config YAML (creates timestamped backup)",
-    )
-    parser.add_argument(
-        "--config-path",
-        type=Path,
-        default=ROOT / "configs" / "project_config.yaml",
-        help="Path to project config YAML used with --write-config",
-    )
-
-    args = parser.parse_args()
-    run_tuning(
-        trials=max(1, args.trials),
-        seeds=max(1, args.seeds),
-        pd_only=args.pd_only,
-        show=not args.no_show,
-        output_subdir=args.output_subdir,
-        kp_min=args.kp_min,
-        kp_max=args.kp_max,
-        ki_min=args.ki_min,
-        ki_max=args.ki_max,
-        kd_min=args.kd_min,
-        kd_max=args.kd_max,
-        torque_min=args.torque_min,
-        torque_max=args.torque_max,
-        write_config=args.write_config,
-        config_path=args.config_path,
-    )
+    args = make_parser().parse_args()
+    if args.mode == "tune-pid":
+        run_pid_random_search(args)
+    elif args.mode == "tune-pid-sh":
+        run_pid_successive_halving(args)
+    else:
+        run_swingup_sweep(args)
 
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+

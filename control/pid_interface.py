@@ -104,19 +104,43 @@ class ReactionWheelPIDController(PIDInterface):
 
         theta = self.wrap_angle(theta)
 
-        # Integral accumulation
-        self.integral += theta * self.dt
+        # Proportional + derivative terms.
+        p_term = self.kp * theta
+        d_term = self.kd * omega
 
-        self.integral = np.clip(
-            self.integral,
-            -self.integral_limit,
-            self.integral_limit,
+        # Conditional-integration anti-windup:
+        # 1) predict unclipped output with current integral,
+        # 2) if saturated and error would push further into saturation,
+        #    freeze the integrator for this step,
+        # 3) otherwise integrate normally.
+        i_term_current = self.ki * self.integral
+        unclipped_current = p_term + d_term + i_term_current
+        saturated_high = unclipped_current > 1.0
+        saturated_low = unclipped_current < -1.0
+        pushes_further_high = theta > 0.0
+        pushes_further_low = theta < 0.0
+
+        should_freeze_integrator = (
+            (saturated_high and pushes_further_high)
+            or (saturated_low and pushes_further_low)
         )
 
-        # PID control law
-        torque = -(
-            self.kp * theta
-            + self.kd * omega
+        if not should_freeze_integrator:
+            self.integral += theta * self.dt
+            self.integral = np.clip(
+                self.integral,
+                -self.integral_limit,
+                self.integral_limit,
+            )
+
+        # PID control law.
+        # Sign convention note:
+        # In the environment dynamics, motor torque acts on the pendulum body
+        # as tau_body = -tau_motor. Therefore, a positive theta near upright
+        # requires a positive motor command to create restoring negative body torque.
+        torque = (
+            p_term
+            + d_term
             + self.ki * self.integral
         )
 
@@ -124,5 +148,7 @@ class ReactionWheelPIDController(PIDInterface):
         torque = np.clip(torque, -1.0, 1.0)
 
         return float(torque)
+
+
 
 

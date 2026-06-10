@@ -3,13 +3,22 @@ simulation:
   duration: 8.0
   alpha: 0
   nn_torque_scale: 0
-  pid_kp: 4.734153871913395
-  pid_ki: 0.0
-  pid_kd: 0.5378765589074217
+  pid_kp: 4.6438
+  pid_ki: 0.1313
+  pid_kd: 0.4789
   pid_integral_limit: 2.0
-  pid_torque_scale: 0.4
-  max_wheel_torque: 0.7939484399335369
-  initial_angle: 0.12
+  pid_torque_scale: 0.3
+  enable_swingup: true
+  swingup_gain: 2.5
+  switch_threshold_deg: 8.0
+  fallback_threshold_deg: 45.0
+  max_switch_velocity: 0.8
+  max_switch_wheel_speed: 45.0
+  swingup_escape_torque: 0.3
+  swingup_escape_torque_fraction: 0.9
+  swingup_low_speed_threshold: 0.35
+  max_wheel_torque: 0.3
+  initial_angle: 0.05
   initial_omega: 0.0
   arm_mass: 0.0099
   arm_length: 0.115

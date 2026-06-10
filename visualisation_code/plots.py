@@ -12,6 +12,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import AutoMinorLocator, MultipleLocator
 
 from signal_processing.fft import compute_fft
 from simulation.pendulum_env import SimulationResult
@@ -60,6 +61,22 @@ def _annotate_peaks(
             fontsize=8,
             color="#333333",
         )
+
+
+def _apply_fft_xaxis_format(ax: plt.Axes, upper_freq_hz: float) -> None:
+    """Apply adaptive FFT x-axis major/minor tick spacing for readability."""
+    if upper_freq_hz <= 0:
+        return
+
+    target_major_ticks = 10.0
+    raw_major_step = upper_freq_hz / target_major_ticks
+    nice_steps = [0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0, 10.0, 20.0, 50.0]
+    major_step = next((step for step in nice_steps if step >= raw_major_step), nice_steps[-1])
+    minor_step = major_step / 2.0
+
+    ax.xaxis.set_major_locator(MultipleLocator(major_step))
+    ax.xaxis.set_minor_locator(MultipleLocator(minor_step))
+    ax.grid(True, which="minor", axis="x", alpha=0.15)
 
 
 def plot_fitness_history(
@@ -162,6 +179,7 @@ def plot_training_summary(
     if mean is not None and len(mean) == len(best):
         axes[0].plot(gens, mean, label="Mean fitness", color="coral", alpha=0.9, linewidth=1.8)
     axes[0].set_ylabel("Fitness")
+    axes[0].set_xlabel("Generation")
     axes[0].set_title("Training progress", fontsize=12)
     axes[0].grid(True, alpha=0.3)
     axes[0].legend(loc="best")
@@ -193,6 +211,7 @@ def plot_training_summary(
         axes[1].set_ylabel("# species")
         axes[1].set_title("Species diversity", fontsize=12)
     axes[1].grid(True, alpha=0.3)
+    axes[1].set_xlabel("Generation")
 
     has_schedule = (
         schedule_generations is not None
@@ -276,6 +295,7 @@ def plot_fft(
         if max_freq_hz is not None:
             upper = min(upper, max_freq_hz)
         ax.set_xlim(0.0, upper)
+        _apply_fft_xaxis_format(ax, upper)
 
     ax.set_xlabel("Frequency (Hz)")
     ax.set_ylabel("Amplitude")
@@ -311,8 +331,11 @@ def plot_rollout(
     ax_angle = axes[0]
     ax_angle.plot(time, result.angle, color="steelblue", linewidth=2.0, label="Angle (rad)")
     ax_angle.set_ylabel("Angle (rad)", color="steelblue")
+    ax_angle.set_xlabel("Time (s)")
     ax_angle.tick_params(axis="y", labelcolor="steelblue")
     ax_angle.grid(True, alpha=0.3)
+    ax_angle.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax_angle.grid(True, which="minor", axis="x", alpha=0.15)
 
     ax_accel = ax_angle.twinx()
     ax_accel.plot(
@@ -334,7 +357,10 @@ def plot_rollout(
     ax_ctrl.plot(time, result.pid_output, color="seagreen", linewidth=1.8, label="PID output")
     ax_ctrl.plot(time, result.nn_output, color="purple", linewidth=1.6, alpha=0.9, label="NN output")
     ax_ctrl.set_ylabel("Controller output (norm)")
+    ax_ctrl.set_xlabel("Time (s)")
     ax_ctrl.grid(True, alpha=0.3)
+    ax_ctrl.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax_ctrl.grid(True, which="minor", axis="x", alpha=0.15)
 
     ax_torque = ax_ctrl.twinx()
     ax_torque.plot(
@@ -368,7 +394,9 @@ def plot_rollout(
     ax_fft.set_ylabel("Amplitude")
     ax_fft.set_title("Pendulum angle spectrum")
     if len(freqs):
-        ax_fft.set_xlim(0, min(8.0, freqs[-1]))
+        upper = min(8.0, freqs[-1])
+        ax_fft.set_xlim(0, upper)
+        _apply_fft_xaxis_format(ax_fft, upper)
         _annotate_peaks(ax_fft, _dominant_peaks(result.angle, sample_rate, max_freq_hz=8.0))
     ax_fft.grid(True, alpha=0.3)
     handles, labels = ax_fft.get_legend_handles_labels()
@@ -389,6 +417,7 @@ def plot_frequency_diagnostics(
     result: SimulationResult,
     target_band_hz: Optional[List[float]] = None,
     noise_band_hz: Optional[List[float]] = None,
+    max_freq_hz: float = 25.0,
     save_path: Optional[Path] = None,
     show: bool = True,
 ) -> None:
@@ -409,15 +438,18 @@ def plot_frequency_diagnostics(
             ax.axvspan(target_band_hz[0], target_band_hz[1], alpha=0.18, color=TARGET_BAND_COLOR)
         if noise_band_hz and len(noise_band_hz) >= 2:
             ax.axvspan(noise_band_hz[0], noise_band_hz[1], alpha=0.12, color=NOISE_BAND_COLOR)
-        peaks = _dominant_peaks(signal, sample_rate)
+        peaks = _dominant_peaks(signal, sample_rate, max_freq_hz=max_freq_hz)
         peak_text = ", ".join(f"{f:.2f} Hz" for f, _ in peaks[:3])
         ax.set_ylabel("Amplitude")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.tick_params(axis="x", which="both", labelbottom=True)
         ax.set_title(f"{label} FFT | strongest: {peak_text}")
         _annotate_peaks(ax, peaks)
         ax.grid(True, alpha=0.3)
 
-    axes[-1].set_xlabel("Frequency (Hz)")
-    axes[-1].set_xlim(0, 25)
+    axes[-1].set_xlim(0, max_freq_hz)
+    _apply_fft_xaxis_format(axes[-1], max_freq_hz)
+
     fig.suptitle("Frequency diagnostics: tabletop footstep/base-accelerometer demo")
     fig.tight_layout()
     if save_path:
