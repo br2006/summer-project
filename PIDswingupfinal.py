@@ -27,7 +27,7 @@ class Pendulum:
         self.ddtheta = 0
         self.tm = 0
 
-    def energy(self):
+    def currentEnergy(self):
         """
         Total mechanical energy with theta=0 at top convention.
         PE = -mgl*cos(theta)
@@ -39,14 +39,14 @@ class Pendulum:
         PE = -self.m * self.g * self.l * np.cos(self.theta)
         return KE + PE
 
-    def energy_upright(self):
+    def targetEnergy(self):
         """Target energy: sitting still at the top."""
         return -self.m * self.g * self.l
 
-    def apply_forces(self, wheel):
+    def applyForces(self, wheel):
         torque_gravity = self.m * self.g * self.l * np.sin(self.theta)
         torque_damping = -self.bp * self.dtheta
-        torque_control = -wheel.update(self)      # Newton 3rd reaction on pendulum
+        torque_control = -wheel.update(self)
         self.ddtheta = (torque_gravity + torque_damping + torque_control) / self.I
         dt = 1.0 / (TPF * FPS)
         self.dtheta += self.ddtheta * dt
@@ -63,10 +63,10 @@ class Pendulum:
         pygame.draw.line(screen, (80, 80, 80),
                          (pivot_x, pivot_y), (bob_x, bob_y), 4)
         pygame.draw.circle(screen, (60, 60, 60), (pivot_x, pivot_y), 6)
-        self._draw_flywheel(bob_x, bob_y, wheel.phi)
-        self._draw_hud(wheel)
+        self.drawFlywheel(bob_x, bob_y, wheel.phi)
+        self.drawHUD(wheel)
 
-    def _draw_flywheel(self, cx, cy, phi):
+    def drawFlywheel(self, cx, cy, phi):
         R, num_spokes = 75, 3
         pygame.draw.circle(screen, (30, 30, 30), (cx, cy), R, 3)
         pygame.draw.circle(screen, (80, 80, 80), (cx, cy), R - 6, 1)
@@ -80,7 +80,7 @@ class Pendulum:
                            (int(cx + (R-3)*np.cos(phi)),
                             int(cy + (R-3)*np.sin(phi))), 4)
 
-    def _draw_hud(self, wheel):
+    def drawHUD(self, wheel):
         font    = pygame.font.SysFont("monospace", 15)
         font_lg = pygame.font.SysFont("monospace", 20, bold=True)
         if wheel.mode == "BALANCE":
@@ -88,7 +88,7 @@ class Pendulum:
         else:
             mode_col, mode_text = (200, 100, 0), "MODE: SWING-UP (energy shaping)"
         screen.blit(font_lg.render(mode_text, True, mode_col), (10, 10))
-        E, E_star = self.energy(), self.energy_upright()
+        E, E_star = self.currentEnergy(), self.targetEnergy()
         for i, txt in enumerate([
             f"θ       : {self.theta:+.4f} rad  ({np.degrees(self.theta):+.1f}°)",
             f"dθ/dt   : {self.dtheta:+.4f} rad/s",
@@ -102,11 +102,8 @@ class Pendulum:
         screen.blit(font.render("← → : impulse    R : reset    Q : quit",
                                 True, (180, 180, 180)), (10, HEIGHT - 24))
 
-
 class Reaction:
-    def __init__(self, I, kp, ki, kd, maxtorque, bw,
-                 ke_swingup, switch_threshold_deg, fallback_threshold_deg,
-                 max_switch_velocity):
+    def __init__(self, I, kp, ki, kd, maxtorque, bw, ke, switchThresholdDeg, fallbackThresholdDeg, maxSwitchVelocity):
         self.I  = I
         self.bw = bw
         self.kp, self.ki, self.kd = kp, ki, kd
@@ -120,18 +117,16 @@ class Reaction:
         self.maxtorque = maxtorque
         self.maxspeed  = 60.0
 
-        self.ke = ke_swingup
-        self.switch_threshold    = np.radians(switch_threshold_deg)
-        self.fallback_threshold  = np.radians(fallback_threshold_deg)
-        self.max_switch_velocity = max_switch_velocity
+        self.ke = ke
+        self.switchThreshold    = np.radians(switchThresholdDeg)
+        self.fallbackThreshold  = np.radians(fallbackThresholdDeg)
+        self.maxSwitchVelocity = maxSwitchVelocity
         self.mode = "SWINGUP"
 
-    @staticmethod
-    def wrap_angle(angle):
-        """Wrap to [-pi, pi] with 0 = upright."""
+    def wrapAngle(self, angle):
         return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
-    def _swingup_torque(self, pendulum):
+    def swingupTorque(self, pendulum):
         """
         u = ke * (E - E*) * sign(dtheta)
 
@@ -187,41 +182,36 @@ class Reaction:
           delta_E < 0, dtheta > 0 → u < 0 (wheel torque negative)
           Reaction on pendulum = -u > 0, aligned with dtheta → PUMPS ✓
         """
-        E       = 0.5 * pendulum.I * pendulum.dtheta**2 + \
-                  pendulum.m * pendulum.g * pendulum.l * np.cos(pendulum.theta)
+        E = 0.5 * pendulum.I * pendulum.dtheta**2 + pendulum.m * pendulum.g * pendulum.l * np.cos(pendulum.theta)
         E_star  = pendulum.m * pendulum.g * pendulum.l   # value at top
         delta_E = E - E_star
         torque  = self.ke * delta_E * np.sign(pendulum.dtheta)
         return float(np.clip(torque, -self.maxtorque, self.maxtorque))
 
-    def _balance_torque(self, pendulum):
-        error = self.wrap_angle(pendulum.theta)
+    def balanceTorque(self, pendulum):
+        error = self.wrapAngle(pendulum.theta)
         self.integral += error * self.dt
-        self.integral = np.clip(self.integral,
-                                -self.maxtorque / max(self.ki, 1e-9),
-                                 self.maxtorque / max(self.ki, 1e-9))
-        torque = (self.kp * error
-                  + self.kd * pendulum.dtheta
-                  + self.ki * self.integral)
+        self.integral = np.clip(self.integral, -self.maxtorque / max(self.ki, 1e-9), self.maxtorque / max(self.ki, 1e-9))
+        torque = (self.kp * error + self.kd * pendulum.dtheta + self.ki * self.integral)
         return float(np.clip(torque, -self.maxtorque, self.maxtorque))
 
     def update(self, pendulum):
-        angle_from_upright = abs(self.wrap_angle(pendulum.theta))
+        angle_from_upright = abs(self.wrapAngle(pendulum.theta))
         speed = abs(pendulum.dtheta)
 
         if self.mode == "SWINGUP":
-            if (angle_from_upright < self.switch_threshold
-                    and speed < self.max_switch_velocity):
+            if (angle_from_upright < self.switchThreshold
+                    and speed < self.maxSwitchVelocity):
                 self.mode = "BALANCE"
                 self.integral = 0.0
 
         elif self.mode == "BALANCE":
-            if angle_from_upright > self.fallback_threshold:
+            if angle_from_upright > self.fallbackThreshold:
                 self.mode = "SWINGUP"
                 self.integral = 0.0
 
-        torque = (self._balance_torque(pendulum) if self.mode == "BALANCE"
-                  else self._swingup_torque(pendulum))
+        torque = (self.balanceTorque(pendulum) if self.mode == "BALANCE"
+                  else self.swingupTorque(pendulum))
 
         self.ddphi  = (torque - self.bw * self.dphi) / self.I
         self.dphi  += self.ddphi * self.dt
@@ -254,15 +244,15 @@ wheel_maxtorque = 0.1
 wheel_damping   = 0.0
 
 ke_swingup             = 10.0
-switch_threshold_deg   = 20.0
-max_switch_velocity    = 2.0
-fallback_threshold_deg = 40.0
+switchThresholdDeg   = 20.0
+maxSwitchVelocity    = 2.0
+fallbackThresholdDeg = 40.0
 
 pend  = Pendulum(pend_height, pend_inertia, pend_theta_0,
                  pend_initial_v, pend_mass, pend_damping)
 wheel = Reaction(wheel_inertia, wheel_kp, wheel_ki, wheel_kd, wheel_maxtorque,
-                 wheel_damping, ke_swingup, switch_threshold_deg,
-                 fallback_threshold_deg, max_switch_velocity)
+                 wheel_damping, ke_swingup, switchThresholdDeg,
+                 fallbackThresholdDeg, maxSwitchVelocity)
 count = 0
 
 # --- pyqtgraph setup ---
@@ -299,10 +289,10 @@ while True:
             elif keys[pygame.K_q]:
                 pygame.quit(); sys.exit()
 
-    pend.apply_forces(wheel)
+    pend.applyForces(wheel)
     pend.draw(wheel)
 
-    wrapped_theta = wheel.wrap_angle(pend.theta)
+    wrapped_theta = wheel.wrapAngle(pend.theta)
     plotter.push('θ (from upright)', count, wrapped_theta)
     plotter.push('dθ/dt',            count, pend.dtheta)
     plotter.push('ΔE',               count,
